@@ -360,6 +360,13 @@ g = duel(5, 40, 20, 300, 300)
 g.play_turn("ding_hai_shen_zhen", "shou_qiang")
 ok("ding_hai heals when blocked", g.p0.hp == 210, f"hp0={g.p0.hp}")
 
+# 朋友反馈（2026-10-25）：定海神针被闪了以后也应该加血。
+# C32「被防仍加血」的原则同样适用于被闪。
+g = duel(5, 40, 10, 300, 300)
+g.play_turn("ding_hai_shen_zhen", "shan")
+ok("shan dodges ding_hai damage", g.p1.hp == 300, f"hp1={g.p1.hp}")
+ok("ding_hai still heals when dodged by shan", g.p0.hp == 360, f"hp0={g.p0.hp}")
+
 g = duel(5, 0, 0, 300, 300)
 prep(g, 0, ["zhong_fang", "zhong_fang", "xi", "zhong_fang"])
 g.play_turn("xiang_yun_kui", "yun")

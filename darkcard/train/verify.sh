@@ -35,6 +35,7 @@ run "不变量扫描" python "$PROJ/train/invariants.py" 800
 run "联机服务器自测" python "$PROJ/server/test_server.py"
 run "自动更新专项（4 类更新形式）" python "$PROJ/server/test_update.py"
 run "升级过渡实测（v0.3.0 → v0.3.1）" python "$PROJ/server/test_transition.py"
+run "新模式自动更新实测" python "$PROJ/server/test_new_mode.py"
 run "联机端到端（双客户端）" python "$PROJ/tools/run_online_test.py"
 run "打包服务器（发给对方的 zip）" python "$PROJ/tools/pack_server.py"
 

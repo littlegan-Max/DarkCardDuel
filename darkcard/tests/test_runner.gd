@@ -567,6 +567,16 @@ func _test_batch3() -> void:
     _ok("ding_hai still heals when blocked", d27.state.players[0].hp == 210,
         "hp0=%d" % d27.state.players[0].hp)
 
+    # 朋友反馈（2026-10-25）：定海神针被闪了以后也应该加血。
+    # C32「被防仍加血」的原则：+0.6 加的是施术者自己，闪躲的是"指向对方"的部分，
+    # 够不着施术者自己的收益。闪躲掉了伤害，但加血照旧。
+    var d27b := _duel(5, 40, 10, 300, 300)
+    d27b.play_turn("ding_hai_shen_zhen", "shan")
+    _ok("shan dodges ding_hai damage", d27b.state.players[1].hp == 300,
+        "hp1=%d" % d27b.state.players[1].hp)
+    _ok("ding_hai still heals when dodged by shan", d27b.state.players[0].hp == 360,
+        "hp0=%d" % d27b.state.players[0].hp)
+
     var d28 := _duel(5, 0, 0, 300, 300)
     _prep(d28, 0, ["zhong_fang", "zhong_fang", "xi", "zhong_fang"])
     d28.play_turn("xiang_yun_kui", "yun")

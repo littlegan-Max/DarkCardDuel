@@ -58,6 +58,27 @@ func _ready() -> void:
     opponent_model = OpponentStore.load_model()
     _build_ui()
     _start_match()
+    _report_presence("in_game_ai")
+
+
+## 上报自己的状态。
+##
+## 联机对战的状态服务器自己知道（排队/进房/开局/结束都是服务器发起的），
+## 只有**人机对战**是纯单机侧发生的，服务器看不见——
+## 所以这里自己报一下，好友那边就能看到"这人正在人机对战"。
+##
+## 联机模式下不重复报（服务器已经知道状态了）。
+func _report_presence(state: String) -> void:
+    if controller != null and controller.mode == MatchController.MODE_ONLINE:
+        return
+    var c := NetClient.new()
+    add_child(c)
+    if not c.has_identity():
+        c.queue_free()
+        return
+    c.set_server(c.host, c.port)
+    c.set_presence(state)
+    c.call_deferred("queue_free")
 
 
 func _process(delta: float) -> void:

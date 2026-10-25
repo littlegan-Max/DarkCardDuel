@@ -346,7 +346,11 @@ func _phase_resource(ctx: ResolutionContext, events: Array, ledger: HpLedger) ->
                 amount *= ctx.kui_mult
 
             if ctx.negated[i]:
-                if ctx.blocked_by[i] == "shan":
+                # 闪能整体躲掉一张牌（B9：真伤也算"攻击"，闪躲一切除手枪）。
+                # 但定海神针的「自己 +0.6」加的是**施术者自己**，
+                # 闪躲的是「指向对方」的部分，够不着施术者自己的收益——
+                # 所以 C32「被防仍加血」的原则同样适用于被闪。
+                if ctx.blocked_by[i] == "shan" and not bool(op.get("on_blocked", false)):
                     continue
                 var keep := false
                 if kind == "TRUE_DMG" or bool(op.get("true_dmg", false)):

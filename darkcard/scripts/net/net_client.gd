@@ -27,7 +27,7 @@ const DEFAULT_HOST := "127.0.0.1"
 const DEFAULT_PORT := 8737
 
 # 协议版本：与服务器必须一致。改了消息格式就两边一起 +1。
-const PROTOCOL_VERSION := 1
+const PROTOCOL_VERSION := 2
 
 var host := DEFAULT_HOST
 var port := DEFAULT_PORT
@@ -322,8 +322,35 @@ func rename_player(name: String) -> void:
 	api("rename", {"name": name})
 
 
-func create_room() -> void:
-	api("create_room", {})
+func create_room(turn_seconds: float = 20.0) -> void:
+	# 自建房的出牌时间由房主定（服务器会夹在 5~120 秒之间）
+	api("create_room", {"turn_seconds": turn_seconds})
+
+
+func start_room(room_id: String, turn_seconds: float = -1.0) -> void:
+	# 房主手动开始；turn_seconds >= 0 时顺便改这一局的出牌时间
+	var body := {"room_id": room_id.to_upper()}
+	if turn_seconds >= 0.0:
+		body["turn_seconds"] = turn_seconds
+	api("start_room", body)
+
+
+func remove_member(room_id: String, target_id: String) -> void:
+	# 房主把某个成员请出房间（PlayFab 的大厅机制）
+	api("remove_member", {"room_id": room_id.to_upper(), "target_id": target_id})
+
+
+func match_status() -> void:
+	api("match_status", {})
+
+
+func list_players() -> void:
+	api("list_players", {})
+
+
+func set_presence(state: String) -> void:
+	# 客户端自报状态（单机人机对战用；联机的状态服务器自己知道）
+	api("set_presence", {"state": state})
 
 
 func join_room(room_id: String) -> void:

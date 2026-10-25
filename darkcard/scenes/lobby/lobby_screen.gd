@@ -24,6 +24,18 @@ var _join_btn: Button
 var _invite_btn: Button
 var _room_id := ""
 var _queued := false
+var _host_id := ""          # 当前房间的房主
+var _turn_seconds := 20.0   # 当前房间的出牌时间
+var _my_mmr := 0            # 我的评分
+var _turn_opt: OptionButton # 出牌时间选择
+var _match_info: Label      # 匹配中的等待信息
+var _room_panel: VBoxContainer   # 房间信息面板（进房间才显示）
+var _room_info: Label
+var _room_members: VBoxContainer   # 房间成员（房主能移除）
+var _room_members_data: Array = []   # 当前房间的成员
+var _start_btn: Button      # 房主的「开始」
+var _leave_btn: Button      # 离开房间
+var _players_list: VBoxContainer   # 在线玩家（带状态）
 var _refresh_timer := 0.0
 var _pending_friend_invite := ""
 var _disabled := false
@@ -93,6 +105,11 @@ func _build_ui() -> void:
 
 	# —— 房间列表 ——
 	col.add_child(_panel("房间列表", _build_rooms()))
+
+	# —— 在线玩家（带状态：空闲 / 匹配中 / 房间中 / 对战中 / 人机对战）——
+	_players_list = VBoxContainer.new()
+	_players_list.add_theme_constant_override("separation", 4)
+	col.add_child(_panel("在线玩家", _players_list))
 
 	# —— 好友 ——
 	col.add_child(_panel("好友", _build_friends()))
@@ -191,6 +208,44 @@ func _build_match() -> Control:
 	_invite_btn = _btn("邀请好友进本房间", _on_invite)
 	_invite_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row3.add_child(_invite_btn)
+
+	# 出牌时间：自建房由房主定，匹配固定 10 秒
+	var row4 := HBoxContainer.new()
+	row4.add_theme_constant_override("separation", 6)
+	v.add_child(row4)
+	row4.add_child(_lab("出牌时间", 11, UiPalette.DIM))
+	_turn_opt = OptionButton.new()
+	for sec in [5, 10, 15, 20, 30, 60]:
+		_turn_opt.add_item("%d 秒" % sec, sec)
+	_turn_opt.select(3)   # 默认 20 秒
+	_turn_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_turn_opt.item_selected.connect(_on_turn_seconds_changed)
+	row4.add_child(_turn_opt)
+
+	# 匹配中的等待信息
+	_match_info = _lab("", 11, UiPalette.GOLD)
+	_match_info.visible = false
+	v.add_child(_match_info)
+
+	# 房间信息面板（进了房间才显示）
+	_room_panel = VBoxContainer.new()
+	_room_panel.add_theme_constant_override("separation", 6)
+	_room_panel.visible = false
+	v.add_child(_room_panel)
+	_room_info = _lab("", 11, UiPalette.TEXT)
+	_room_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_room_panel.add_child(_room_info)
+	_room_members = VBoxContainer.new()
+	_room_members.add_theme_constant_override("separation", 3)
+	_room_panel.add_child(_room_members)
+	var row5 := HBoxContainer.new()
+	row5.add_theme_constant_override("separation", 6)
+	_room_panel.add_child(row5)
+	_start_btn = _btn("开始这一局", _on_start_room)
+	_start_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row5.add_child(_start_btn)
+	_leave_btn = _btn("离开房间", _on_leave_room)
+	row5.add_child(_leave_btn)
 	return v
 
 
@@ -261,7 +316,8 @@ func _on_matchmake() -> void:
 
 
 func _on_create_room() -> void:
-	client.create_room()
+	_turn_seconds = float(_turn_opt.get_item_id(_turn_opt.get_selected_id()))
+	client.create_room(_turn_seconds)
 
 
 func _on_join_room() -> void:
@@ -270,6 +326,27 @@ func _on_join_room() -> void:
 		_set_status("房号是 6 位", UiPalette.RED)
 		return
 	client.join_room(code)
+
+
+func _on_turn_seconds_changed(_idx: int) -> void:
+	# 房主改出牌时间：先记下来，点了「开始」才生效
+	_turn_seconds = float(_turn_opt.get_item_id(_turn_opt.get_selected_id()))
+
+
+func _on_start_room() -> void:
+	if _room_id == "":
+		_set_status("还没进房间", UiPalette.RED)
+		return
+	client.start_room(_room_id, _turn_seconds)
+	_set_status("已开始", UiPalette.TEAL)
+
+
+func _on_leave_room() -> void:
+	client.leave_room()
+	_room_id = ""
+	_host_id = ""
+	_room_panel.visible = false
+	_set_status("已离开房间", UiPalette.DIM)
 
 
 func _on_add_friend() -> void:
@@ -306,15 +383,36 @@ func _on_cmd_result(cmd: String, res: Dictionary) -> void:
 			client.api("friends", {})
 		"create_room":
 			_room_id = str(res.get("room_id", ""))
+			_host_id = client.player_id
+			_turn_seconds = float(res.get("turn_seconds", _turn_seconds))
+			_show_room()
 			_set_status("房间已创建，房号 " + _room_id, UiPalette.GOLD)
 		"join_room":
 			_room_id = str(res.get("room_id", ""))
+			_show_room()
 			_set_status("已加入房间 " + _room_id, UiPalette.GOLD)
+		"start_room":
+			_set_status("已开始这一局", UiPalette.TEAL)
 		"matchmake":
 			if bool(res.get("queued", false)):
 				_set_status("排队中…", UiPalette.GOLD)
+				_match_info.visible = true
+				_update_match_info(res.get("status", {}))
 			else:
+				_match_info.visible = false
 				_set_status("匹配成功", UiPalette.TEAL)
+		"cancel_match":
+			_match_info.visible = false
+			_set_status("已取消匹配", UiPalette.DIM)
+		"match_status":
+			if bool(res.get("queued", false)):
+				_update_match_info(res)
+			else:
+				_match_info.visible = false
+		"list_players":
+			_refresh_players(res.get("players", []))
+		"profile":
+			_my_mmr = int(res.get("mmr", 0))
 		"add_friend":
 			_friend_name_edit.text = ""
 			client.api("friends", {})
@@ -331,8 +429,10 @@ func _on_event(evt: Dictionary) -> void:
 	match str(evt.get("type", "")):
 		"room_joined":
 			_room_id = str(evt.get("room_id", ""))
+			_host_id = str(evt.get("host_id", ""))
+			_room_members_data = evt.get("players", [])
+			_show_room()
 			_set_status("已进入房间 " + _room_id, UiPalette.GOLD)
-			_enter_battle()
 		"game_start":
 			_enter_battle()
 		"invite":
@@ -349,6 +449,127 @@ func _on_event(evt: Dictionary) -> void:
 			_set_status("%s 进了房间" % str(evt.get("player", {}).get("name", "")), UiPalette.GOLD)
 		"player_left":
 			_set_status("对手离开了", UiPalette.RED)
+		"room_state":
+			_host_id = str(evt.get("host_id", ""))
+			_room_members_data = evt.get("players", [])
+			_show_room()
+		"host_changed":
+			_host_id = str(evt.get("host_id", ""))
+			_show_room()
+			_set_status("%s 成了新房主" % str(evt.get("host_name", "")), UiPalette.GOLD)
+		"match_expired":
+			_match_info.visible = false
+			_queued = false
+			_match_btn.text = "快速匹配"
+			_set_status(str(evt.get("message", "没找到对手")), UiPalette.RED)
+		"match_cancelled":
+			_match_info.visible = false
+
+
+## 显示当前房间信息（房号、成员、房主、出牌时间）
+func _show_room() -> void:
+	if _room_id == "":
+		_room_panel.visible = false
+		return
+	_room_panel.visible = true
+	var is_host := _host_id == client.player_id or _host_id == ""
+	_room_info.text = "房间 %s · 出牌 %d 秒\n%s" % [
+		_room_id, int(_turn_seconds),
+		"你是房主，可以点「开始这一局」" if is_host else "等房主开始这一局",
+	]
+	_start_btn.visible = is_host
+	_turn_opt.disabled = not is_host
+	_refresh_room_members(is_host)
+
+
+## 房间成员列表。房主可以移除不活跃的成员（PlayFab 的大厅做法）。
+func _refresh_room_members(is_host: bool) -> void:
+	for c in _room_members.get_children():
+		_room_members.remove_child(c)
+		c.queue_free()
+	for m in _room_members_data:
+		if not (m is Dictionary):
+			continue
+		var mid := str(m.get("id", ""))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		_room_members.add_child(row)
+		var nm := str(m.get("name", "?"))
+		if mid == client.player_id:
+			nm += "（你）"
+		var l := _lab(nm, 11, UiPalette.TEXT)
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(l)
+		if is_host and mid != client.player_id:
+			var rm := _btn("移除", func() -> void:
+				client.remove_member(_room_id, mid)
+				_set_status("已把 " + str(m.get("name", "")) + " 请出房间", UiPalette.GOLD))
+			rm.custom_minimum_size = Vector2(52, 24)
+			row.add_child(rm)
+
+
+func _update_match_info(status: Dictionary) -> void:
+	if status.is_empty():
+		return
+	_match_info.visible = true
+	_match_info.text = "匹配中 · 已等待 %.0f 秒 · 评分 %d · 当前范围 ±%d" % [
+		float(status.get("waited", 0.0)),
+		int(status.get("mmr", _my_mmr)),
+		int(status.get("window", 0.0)),
+	]
+
+
+func _refresh_players(players: Array) -> void:
+	for c in _players_list.get_children():
+		_players_list.remove_child(c)
+		c.queue_free()
+	if players.is_empty():
+		_players_list.add_child(_lab("（还没有别人在线）", 11, UiPalette.DIM))
+		return
+	for p in players:
+		if not (p is Dictionary):
+			continue
+		var st := str(p.get("state", "idle"))
+		var color := UiPalette.DIM
+		match st:
+			"idle":
+				color = UiPalette.TEAL
+			"matchmaking":
+				color = UiPalette.GOLD
+			"in_lobby":
+				color = UiPalette.TEXT
+			"in_game", "in_game_ai":
+				color = UiPalette.RED
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		_players_list.add_child(row)
+		var l := _lab("%s %s" % [str(p.get("name", "?")), str(p.get("label", ""))],
+			11, color)
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(l)
+		# 在房间里的人可以点「加入」直接进他的房间
+		var rid := str(p.get("room_id", ""))
+		if rid != "" and st == "in_lobby":
+			var join := _btn("加入", func() -> void:
+				client.join_room(rid)
+				_set_status("正在加入房间 " + rid, UiPalette.GOLD))
+			join.custom_minimum_size = Vector2(52, 24)
+			row.add_child(join)
+
+
+func _process(delta: float) -> void:
+	# 定时刷新：匹配状态、在线玩家、好友在线状态
+	_refresh_timer += delta
+	if _refresh_timer < 1.0:
+		return
+	_refresh_timer = 0.0
+	if not client.has_identity():
+		return
+	if _queued:
+		client.match_status()
+	if int(_refresh_timer * 10) % 30 == 0:
+		client.list_players()
+		client.list_friends()
 
 
 func _on_version_error(message: String) -> void:
@@ -433,9 +654,11 @@ func _refresh_friends(friends: Array) -> void:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
 		var on := bool(f.get("online", false))
+		var st := str(f.get("state", "idle"))
 		var dot := "●" if on else "○"
 		var color := UiPalette.TEAL if on else UiPalette.DIM
-		var l := _lab("%s %s" % [dot, str(f.get("name", "?"))], 11, color)
+		var tail := " · " + str(f.get("label", "")) if on else ""
+		var l := _lab("%s %s%s" % [dot, str(f.get("name", "?")), tail], 11, color)
 		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(l)
 		var fid := str(f.get("id", ""))

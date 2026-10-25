@@ -625,7 +625,11 @@ class _Ctx:
                     amount *= self.kui_mult
 
                 if self.negated[i]:
-                    if self.blocked_by[i] == "shan":
+                    # 闪能整体躲掉一张牌（B9：真伤也算"攻击"，闪躲一切除手枪）。
+                    # 但定海神针的「自己 +0.6」加的是**施术者自己**，
+                    # 闪躲的是「指向对方」的部分，够不着施术者自己的收益——
+                    # 所以 C32「被防仍加血」的原则同样适用于被闪。
+                    if self.blocked_by[i] == "shan" and not op.get("on_blocked"):
                         continue
                     keep = (kind == "TRUE_DMG" or op.get("true_dmg") or op.get("on_blocked")
                             or (kind == "PRC_DMG" and self.blocked_by[i] == "yun"))
