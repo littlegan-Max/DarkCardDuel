@@ -26,10 +26,49 @@ func _run() -> void:
 	await _check_keep_node_survives()
 	await _check_battle_back_to_menu()
 	await _check_lobby_back_to_menu()
+	await _check_version_direction()
 
 	print("")
 	print("[scene_nav] %d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
+
+
+## 版本提示方向不能反：服务器比客户端旧时，不该提示「你的客户端版本较旧」。
+func _check_version_direction() -> void:
+	# 纯版本比较
+	var cases := [
+		["0.3.2", "0.3.3", true],    # 服务器旧
+		["0.3.3", "0.3.2", false],   # 客户端旧
+		["0.3.3", "0.3.3", false],
+		["0.10.0", "0.9.0", false],  # 按数字比，不是按字符串
+		["0.3", "0.3.1", true],
+		["1.0.0", "0.99.99", false],
+	]
+	for c in cases:
+		var got: bool = NetClient._ver_lt(c[0], c[1])
+		if got != bool(c[2]):
+			_fail("版本比较错误：_ver_lt(%s, %s) = %s，应为 %s" % [c[0], c[1], got, c[2]])
+			return
+
+	# 信号方向：服务器旧 → 走 server_outdated；客户端旧 → 走 client_update_available
+	# 注意：GDScript 的 lambda 是「按值捕获」，要用容器才能在回调里改到外面的值
+	var c2 := NetClient.new()
+	root.add_child(c2)
+	c2.local_game_version = "0.3.3"
+	var hits: Array = []
+	c2.client_update_available.connect(func(_v: String) -> void: hits.append("client"))
+	c2.server_outdated.connect(func(_v: String) -> void: hits.append("server"))
+
+	c2._check_version({"ok": true, "rules_version": "2.1", "game_version": "0.3.2"})
+	if hits.size() != 1 or hits[0] != "server":
+		_fail("服务器较旧时提示方向反了（实际发出 %s，应发 server_outdated）" % [hits])
+		return
+	hits.clear()
+	c2._check_version({"ok": true, "rules_version": "2.1", "game_version": "0.3.9"})
+	if hits.size() != 1 or hits[0] != "client":
+		_fail("客户端较旧时提示方向反了（实际发出 %s，应发 client_update_available）" % [hits])
+		return
+	_pass("版本提示方向正确（服务器旧/客户端旧分别提示对）")
 
 
 ## 模拟点主菜单上的某个按钮，看新场景是不是活下来了

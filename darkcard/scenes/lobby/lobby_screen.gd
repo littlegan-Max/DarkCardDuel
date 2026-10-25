@@ -54,6 +54,7 @@ func _ready() -> void:
 	client.version_error.connect(_on_version_error)
 	client.server_updated.connect(_on_server_updated)
 	client.client_update_available.connect(_on_client_update_available)
+	client.server_outdated.connect(_on_server_outdated)
 	client.event_received.connect(_on_event)
 	client.online_count_changed.connect(_on_online_count)
 	client.disconnected.connect(func(r: String) -> void: _set_status("连接断开：" + r, UiPalette.RED))
@@ -587,6 +588,13 @@ func _on_client_update_available(server_version: String) -> void:
 	# 服务器端已经是新版本了（服务器会自动更新），
 	# 但客户端这份 APK/EXE 还旧着——得重新发一次包。
 	_set_status("服务器已更新到 v%s，你的客户端版本较旧，建议更新后再来" % server_version,
+		UiPalette.GOLD)
+
+
+func _on_server_outdated(server_version: String) -> void:
+	# 反过来：服务器比客户端旧。该更新的是服务器，而服务器会自动更新，
+	# 所以等它自己升上来就行，不用玩家做什么。
+	_set_status("服务器版本较旧（v%s），它会自动更新，稍等片刻即可" % server_version,
 		UiPalette.GOLD)
 
 

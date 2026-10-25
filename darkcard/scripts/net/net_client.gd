@@ -22,6 +22,7 @@ signal rooms_changed(rooms: Array)
 signal version_error(message: String)
 signal server_updated(rules_version: String)
 signal client_update_available(server_version: String)
+signal server_outdated(server_version: String)   # 服务器比客户端旧（服务器会自动更新）
 
 const DEFAULT_HOST := "127.0.0.1"
 const DEFAULT_PORT := 8737
@@ -33,6 +34,7 @@ var host := DEFAULT_HOST
 var port := DEFAULT_PORT
 var rules_version := ""      # 本地卡表的规则版本
 var local_game_version := ""  # 本地客户端版本（跟服务器比，提示该不该更新）
+var server_game_version := ""  # 服务器报的客户端版本
 var token := ""
 var player_id := ""
 var player_name := ""
@@ -250,11 +252,29 @@ func _check_version(res: Dictionary) -> void:
 			srv_rules, rules_version]
 		emit_signal("version_error", version_mismatch)
 		return
-	# 规则一致但游戏版本不同：服务器端更新了，客户端这份还旧着。
-	# 服务器端是自动更新的，客户端这边得重新发包——提示玩家一下。
+	# 规则一致但游戏版本不同：看谁更旧，提示的方向不能反。
 	var srv_game := str(res.get("game_version", ""))
+	if srv_game != "":
+		server_game_version = srv_game
 	if srv_game != "" and local_game_version != "" and srv_game != local_game_version:
-		emit_signal("client_update_available", srv_game)
+		if _ver_lt(srv_game, local_game_version):
+			# 服务器比客户端旧：不是玩家要更新，是服务器该更新（它会自动更新）。
+			# 之前这里一律提示「你的客户端版本较旧」，方向反了，会误导人。
+			emit_signal("server_outdated", srv_game)
+		else:
+			emit_signal("client_update_available", srv_game)
+
+
+## 比两个点分版本号：a 比 b 旧则返回 true。
+static func _ver_lt(a: String, b: String) -> bool:
+	var pa := a.split(".")
+	var pb := b.split(".")
+	for i in range(maxi(pa.size(), pb.size())):
+		var x := int(pa[i]) if i < pa.size() else 0
+		var y := int(pb[i]) if i < pb.size() else 0
+		if x != y:
+			return x < y
+	return false
 
 
 func api(cmd: String, extra: Dictionary = {}) -> void:
