@@ -25,32 +25,32 @@ HTTP 是唯一在所有形态下都能跑的。而且**不需要改一行客户�
 
 ## 上传
 
-把这两样传到服务器上（scp / 宝塔面板上传 / 什么方便用什么）：
+**最省事的做法：直接发那个 zip。**
 
 ```bash
-scp server/server.py    user@host:/opt/darkcard/
-scp data/cards.json     user@host:/opt/darkcard/
+python3 tools/pack_server.py     # 生成 build/darkcard-server.zip（23 KB）
 ```
 
-`train/engine.py` 也需要——服务器用它做权威结算。三个文件：
+zip 里只有 3 个文件 + 一份说明，对方解压就能跑，**不需要摆目录结构**：
 
 ```
-/opt/darkcard/
-  server.py
-  cards.json
-  engine.py
+darkcard-server.zip
+  server.py        服务器本体
+  engine.py        规则引擎（权威结算用）
+  cards.json       50 张卡表
+  使用说明.txt      给对方看的操作步骤
 ```
 
-`engine.py` 放哪儿都行，只要 `server.py` 里那行路径能找到。默认它按 `../train/engine.py` 找，所以推荐这样摆：
+把 zip 传到服务器上（scp / 宝塔面板上传 / 什么方便用什么），解压：
 
-```
-/opt/darkcard/
-  server.py
-  cards.json
-/opt/darkcard/engine.py
+```bash
+mkdir -p /opt/darkcard && cd /opt/darkcard
+unzip darkcard-server.zip
+python3 server.py --port 8737
 ```
 
-如果摆成别的结构，改 `server.py` 顶部的 `ROOT` / `CARDS_PATH` 即可。
+> 不解压也行：`python3 server.py` 需要三个文件在一起；
+> 想省事就一起解压。
 
 ## 跑起来
 

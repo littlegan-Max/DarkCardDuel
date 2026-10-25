@@ -34,6 +34,7 @@ run "双引擎对拍" "$GODOT" --headless --path "$PROJ" --script res://tools/pa
 run "不变量扫描" python "$PROJ/train/invariants.py" 800
 run "联机服务器自测" python "$PROJ/server/test_server.py"
 run "联机端到端（双客户端）" python "$PROJ/tools/run_online_test.py"
+run "打包服务器（发给对方的 zip）" python "$PROJ/tools/pack_server.py"
 
 echo
 if [ "$fail" -eq 0 ]; then

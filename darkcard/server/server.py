@@ -58,7 +58,24 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-CARDS_PATH = os.path.join(ROOT, "data", "cards.json")
+
+# 部署时希望「三个文件放一起就能跑」，而不是让人摆对 server/ data/ train/ 的层级。
+# 所以先找同目录，找不到再回退到仓库里的原始布局。
+def _pick(*candidates: str) -> str:
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return candidates[0] if candidates else ""
+
+
+CARDS_PATH = _pick(
+    os.path.join(HERE, "cards.json"),
+    os.path.join(ROOT, "data", "cards.json"),
+)
+ENGINE_PATH = _pick(
+    os.path.join(HERE, "engine.py"),
+    os.path.join(ROOT, "train", "engine.py"),
+)
 STORE_PATH = os.path.join(HERE, "store.json")
 
 PASS_ID = "pass"
@@ -79,7 +96,12 @@ def _load_engine():
     import importlib.util
     import sys
 
-    path = os.path.join(ROOT, "train", "engine.py")
+    path = ENGINE_PATH
+    if not os.path.exists(path):
+        raise RuntimeError(
+            "找不到规则引擎：请把 engine.py 放在 server.py 同目录，"
+            "或保留仓库里的 train/engine.py 布局（找不到 %s）" % path
+        )
     spec = importlib.util.spec_from_file_location("dc_engine", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load engine at %s" % path)
