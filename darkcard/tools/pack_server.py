@@ -82,8 +82,12 @@ README = """暗牌技能对战 · 联机服务器
 
 想手动触发：
 
-    bash update.sh          # 更新到最新版
+    bash update.sh          # 更新到最新版并重启（完整生效，新代码真的在跑）
+    bash update.sh --reload # 只热重载规则，不重启（正在打的局不受影响）
     bash update.sh --check  # 只看有没有新版
+
+如果这台服务器装的是 v0.3.0，第一次升级要跑一次 bash update.sh（默认会重启），
+让新的服务器程序真正运行起来；之后再发版就全自动了。
 
 服务器连不上 GitHub 时，用 --url <直链> 指定下载地址，
 或设环境变量 DARKCARD_UPDATE_URL 指向自己的镜像。

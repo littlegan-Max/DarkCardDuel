@@ -26,6 +26,11 @@ __pycache__/
 server/store.json
 server/store.test.json
 
+# 服务器运行时产物
+darkcard/server/server.pid
+darkcard/server/server.log
+darkcard/server/.updated_from
+
 # 系统
 .DS_Store
 Thumbs.db

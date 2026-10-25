@@ -966,7 +966,10 @@ def check_remote_version(timeout: float = 8.0) -> str:
     forced = os.environ.get("DARKCARD_UPDATE_TAG", "").strip()
     if forced:
         return forced
-    url = "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO
+    url = os.environ.get(
+        "DARKCARD_UPDATE_API",
+        "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO,
+    )
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "darkcard-server"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -1264,7 +1267,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
-            self._send({"ok": True, "service": "darkcard-duel"})
+            # 报的是**正在跑的进程**的版本，不是磁盘上文件的版本。
+            # 两者不一致 = 文件更新了但进程还没换新代码（过渡期就是这个状态），
+            # update.sh 靠这个判断该不该重启。
+            self._send({
+                "ok": True,
+                "service": "darkcard-duel",
+                "game_version": self.api.hub.game_version,
+                "rules_version": self.api.hub.rules_version,
+                "protocol_version": PROTOCOL_VERSION,
+            })
             return
         # GET 也允许带参数调用命令，方便 curl 调试
         qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
@@ -1320,6 +1332,13 @@ def main() -> None:
     print("[darkcard] 规则版本 %s · 协议版本 %d" % (
         hub.rules_version, PROTOCOL_VERSION), flush=True)
     print("[darkcard] 内网穿透请把公网端口映射到 %d/tcp" % args.port, flush=True)
+    # 写 PID 文件：update.sh 靠它精确地重启这个进程，
+    # 不依赖 pgrep（不是所有系统都有）。
+    try:
+        with open(os.path.join(HERE, "server.pid"), "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
     # 上次是不是刚更新过？是的话说明磁盘上的代码比刚才跑的还新
     marker = os.path.join(HERE, ".updated_from")
     if os.path.exists(marker):
