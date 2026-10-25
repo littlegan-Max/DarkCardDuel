@@ -1,0 +1,34 @@
+; Engine configuration file.
+; 暗牌技能对战 · 规则内核垂直切片
+; Godot 4.7.2 / 2D UI / 竖屏 1080x1920
+
+config_version=5
+
+[application]
+
+config/name="暗牌技能对战"
+config/description="Dark Card Duel - rules engine vertical slice (rules 2.1)"
+config/icon="res://icon.png"
+config/version="0.2.5"
+run/main_scene="res://scenes/Battle.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[display]
+
+window/size/viewport_width=540
+window/size/viewport_height=960
+window/size/window_width_override=540
+window/size/window_height_override=960
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=1
+
+[gui]
+
+theme/custom_font="res://assets/fonts/ui.otf"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true

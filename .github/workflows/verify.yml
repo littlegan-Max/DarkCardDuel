@@ -1,0 +1,55 @@
+name: verify
+
+# 门禁：跑一遍规则回归，红灯不合。
+# 本地同一条命令：bash darkcard/train/verify.sh
+#
+# 需要 runner 上有 Godot 4.7.2 与 Python 3.11+。
+# 默认只有手动触发（workflow_dispatch），因为 runs-on 指向自托管 Windows runner；
+# 配好 runner 后把下面的 push / pull_request 触发放开即可。
+#
+# 自托管 Windows runner 的用法：
+#   1. 仓库变量 GODOT_BIN 指向 Godot 可执行文件，
+#      例如 D:/Godot_v4.7.2-stable_win64.exe/Godot_v4.7.2-stable_win64.exe
+#   2. 需要 Python 已安装，且 pip install numpy 可用
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
+
+jobs:
+  verify:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 30
+    env:
+      GODOT_BIN: ${{ vars.GODOT_BIN }}
+    defaults:
+      run:
+        working-directory: darkcard
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查工具链
+        shell: pwsh
+        run: |
+          if (-not $env:GODOT_BIN) { throw "未设置 GODOT_BIN（指向 Godot 4.7.2 可执行文件）" }
+          & $env:GODOT_BIN --version
+          python --version
+
+      - name: 安装 Python 依赖
+        shell: pwsh
+        run: python -m pip install numpy
+
+      - name: 规则回归 + 双引擎对拍 + 不变量扫描
+        shell: pwsh
+        run: |
+          $env:PATH = "$(Split-Path $env:GODOT_BIN);$env:PATH"
+          bash train/verify.sh 300
+
+      - name: 上传对拍用例（便于复现）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-cases
+          path: darkcard/tests/parity_cases.json

@@ -1,0 +1,23 @@
+# Godot / 引擎缓存
+.godot/
+*.translation
+
+# 构建产物（APK / EXE 走 GitHub Releases）
+build/
+*.idsig
+
+# 训练检查点（体积大，随 Release 单独发）
+*.pkl
+
+# 本地备份
+*.bak
+*.tmp
+
+# 会话/工具目录
+.scratch/
+.workbuddy/
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
