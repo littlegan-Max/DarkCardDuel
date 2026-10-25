@@ -20,6 +20,7 @@ signal command_result(cmd: String, res: Dictionary)
 signal online_count_changed(count: int)
 signal rooms_changed(rooms: Array)
 signal version_error(message: String)
+signal server_updated(rules_version: String)
 
 const DEFAULT_HOST := "127.0.0.1"
 const DEFAULT_PORT := 8737
@@ -196,6 +197,15 @@ func _on_cmd_done(result: int, code: int, headers: PackedStringArray, body: Pack
 	_pump_cmd_queue()
 
 
+## 服务器热更新了规则：自动重新登录，把自己的版本同步过去。
+func _on_server_updated(new_rules: String) -> void:
+	if new_rules != "" and new_rules == rules_version:
+		return
+	emit_signal("server_updated", new_rules)
+	# 重新登录一次，服务器会返回新的规则版本，我们据此更新本地认知
+	api("login", {})
+
+
 ## 校验服务器版本。
 ## rules_version 不一致 = 改了规则但服务器没更新（两边规则不同，必须挡住）。
 ## protocol_version 不一致 = 消息格式变了（连不上，必须挡住）。
@@ -281,6 +291,9 @@ func _on_poll_done(result: int, code: int, headers: PackedStringArray, body: Pac
 		emit_signal("online_count_changed", count)
 	for e in res.get("events", []):
 		if e is Dictionary:
+			if str(e.get("type", "")) == "server_updated":
+				# 服务器热更新了规则：重新登录拿新版本
+				_on_server_updated(str(e.get("rules_version", "")))
 			emit_signal("event_received", e)
 	_poll_once()
 

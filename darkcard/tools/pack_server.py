@@ -30,6 +30,7 @@ FILES = [
     (os.path.join(PROJ, "server", "server.py"), "server.py"),
     (os.path.join(PROJ, "train", "engine.py"), "engine.py"),
     (os.path.join(PROJ, "data", "cards.json"), "cards.json"),
+    (os.path.join(PROJ, "server", "update.sh"), "update.sh"),
 ]
 
 README = """暗牌技能对战 · 联机服务器
@@ -41,6 +42,9 @@ README = """暗牌技能对战 · 联机服务器
 运行
 ----
     python3 server.py --port 8737
+
+（会自动开启自动更新，每 10 分钟查一次新版并热重载。
+ 不想自动更新就加 --no-auto-update。）
 
 （Windows 上是 python server.py --port 8737）
 
@@ -64,10 +68,27 @@ README = """暗牌技能对战 · 联机服务器
 --------
     nohup python3 server.py --port 8737 > server.log 2>&1 &
 
+以后更新了怎么办
+----------------
+不用再找我们发文件。服务器默认开着自动更新：
+每 10 分钟查一次 GitHub Releases，有新版就自动下载并热重载生效。
+
+热重载 = 不重启进程、不打断任何对局。
+正在打的那一局按旧规则打完，之后新开的局用新规则。
+（老客户端会被版本握手挡住，提示需要更新。）
+
+想手动触发：
+
+    bash update.sh          # 更新到最新版
+    bash update.sh --check  # 只看有没有新版
+
+服务器连不上 GitHub 时，用 --url <直链> 指定下载地址。
+
 数据
 ----
 store.json 存玩家昵称和好友关系（不含对局）。
 删掉就重置所有玩家和好友。对局只在内存，服务器重启即失效。
+update.sh 更新时会自动保留它。
 """
 
 
@@ -103,21 +124,29 @@ def main() -> int:
 
     game_ver, rules_ver = _versions()
 
-    # 文件名带版本号，一眼看出服务器上跑的是哪一版
-    out_name = "darkcard-server-v%s.zip" % game_ver
-    out_path = os.path.join(os.path.dirname(OUT), out_name)
-
+    # 两个文件名：
+    #   darkcard-server-v0.3.0.zip —— 带版本号，给人看的
+    #   darkcard-server.zip        —— 固定名，给 update.sh 用
+    #                                 （配合 releases/latest/download/ 永远指向最新版）
     readme = README.replace("{{GAME_VERSION}}", game_ver).replace("{{RULES_VERSION}}", rules_ver)
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for src, name in FILES:
-            z.write(src, name)
-        z.writestr("使用说明.txt", readme)
-        # 版本信息单独放一个文件，服务器起来时打印出来
-        z.writestr("版本.txt", "游戏版本 %s\n规则版本 %s\n打包时间 %s\n" % (
-            game_ver, rules_ver, time.strftime("%Y-%m-%d %H:%M:%S")))
+    ver_txt = "游戏版本 %s\n规则版本 %s\n打包时间 %s\n" % (
+        game_ver, rules_ver, time.strftime("%Y-%m-%d %H:%M:%S"))
+
+    def build(path: str) -> None:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            for src, name in FILES:
+                z.write(src, name)
+            z.writestr("使用说明.txt", readme)
+            z.writestr("版本.txt", ver_txt)
+
+    out_path = os.path.join(os.path.dirname(OUT), "darkcard-server-v%s.zip" % game_ver)
+    fixed_path = os.path.join(os.path.dirname(OUT), "darkcard-server.zip")
+    build(out_path)
+    build(fixed_path)
 
     size = os.path.getsize(out_path)
     print("已打包：%s  (%.1f KB)" % (out_path, size / 1024))
+    print("固定名：%s  （给 update.sh 用）" % fixed_path)
     print("版本：游戏 %s / 规则 %s" % (game_ver, rules_ver))
     print("包含：")
     for src, name in FILES:

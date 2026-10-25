@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -355,9 +356,6 @@ class Room:
     def is_idle(self) -> bool:
         return time.time() - self.last_active > ROOM_IDLE_SECONDS
 
-
-# ---------------------------------------------------------------- 中心
-
 class Hub:
     """全局状态中心。所有改动都在 self.lock 保护下进行。"""
 
@@ -559,6 +557,64 @@ class Hub:
 
 
 # ---------------------------------------------------------------- 请求处理
+
+    def has_active_match(self) -> bool:
+        """有没有正在进行的对局（自动更新要等它结束再重启）。"""
+        for room in self.rooms.values():
+            if room.started and not room.over:
+                return True
+        return False
+
+    # ---- 热重载：不重启就换掉规则 ----
+
+    def hot_reload(self) -> tuple[bool, str]:
+        """热重载规则引擎与卡表，不重启进程。
+
+        安全的关键：**每局对局锁定引擎版本**。
+        正在打的局持有的 Game 实例指向旧的 DB 与旧的类，热重载不会影响它，
+        所以那一局会按旧规则正常打完；之后新开的局才用新规则。
+        配合 rules_version 握手（老客户端会被挡），不会出现两边规则不一致。
+
+        先在临时模块里验证新代码能加载，验证过了才切换：
+        万一新 engine.py 有语法错误，服务器保持旧代码继续跑，不会挂掉。
+        """
+        import importlib.util
+        import sys
+
+        try:
+            spec = importlib.util.spec_from_file_location("dc_engine_new", ENGINE_PATH)
+            if spec is None or spec.loader is None:
+                return False, "无法加载 %s" % ENGINE_PATH
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["dc_engine_new"] = mod
+            spec.loader.exec_module(mod)          # 这里抛异常就是新代码有问题
+            new_db = mod.DB(CARDS_PATH)
+            if len(new_db.order) == 0:
+                return False, "新卡表是空的"
+        except Exception as exc:  # noqa: BLE001
+            return False, "新代码加载失败：%s" % exc
+
+        global _engine
+        old_rules = self.rules_version
+        _engine = mod
+        self.db = new_db
+        self.rules_version = str(getattr(new_db, "version", ""))
+        # 正在进行的对局不动：它们的 game 实例还指着旧的 db
+        for room in self.rooms.values():
+            if not room.started:
+                room.set_game(self.new_game())
+        print("[darkcard] 热重载完成：规则 %s -> %s（进行中的对局仍按旧规则打完）" % (
+            old_rules, self.rules_version), flush=True)
+        return True, ""
+
+    def notify_server_updated(self) -> None:
+        """告诉在线客户端「服务器换规则了」，让它们重连拿新版本。"""
+        for pid in list(self.player_events.keys()):
+            self.push(pid, {
+                "type": "server_updated",
+                "rules_version": self.rules_version,
+            })
+
 
 class Api:
     """把 JSON 命令翻译成 Hub 上的操作。"""
@@ -796,6 +852,20 @@ class Api:
             "online_count": self.hub.online_count(),
         }
 
+    def cmd_reload(self, body: dict[str, Any]) -> dict[str, Any]:
+        """手动触发热重载。
+
+        只允许从本机调用（127.0.0.1）：这是运维口子，
+        绝不能让公网随便一个请求就把服务器规则换掉。
+        """
+        if not str(body.get("_local", "")) == "1":
+            return {"ok": False, "error": "reload 只能在本机执行"}
+        ok, err = self.hub.hot_reload()
+        if not ok:
+            return {"ok": False, "error": err}
+        self.hub.notify_server_updated()
+        return {"ok": True, "rules_version": self.hub.rules_version}
+
     def cmd_leave(self, body: dict[str, Any]) -> dict[str, Any]:
         pid = str(body.get("player_id", ""))
         self.hub.dequeue(pid)
@@ -854,6 +924,170 @@ class Watchdog(threading.Thread):
                 })
 
 
+# ---------------------------------------------------------------- 版本检查
+
+UPDATE_REPO = "littlegan-Max/DarkCardDuel"
+
+
+def check_remote_version(timeout: float = 8.0) -> str:
+    """查 GitHub 上有没有比本地新的服务器包。
+
+    只查不动：自动更新意味着半夜重启服务器，得由人决定。
+    返回空串表示已是最新或查不到。
+    """
+    import urllib.request
+
+    url = "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "darkcard-server"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return ""
+    tag = str(data.get("tag_name", ""))
+    if not tag:
+        return ""
+    local = _local_game_version()
+    if local and tag == "v" + local:
+        return ""
+    return tag
+
+
+# ---------------------------------------------------------------- 自动更新
+
+def _local_game_version() -> str:
+    """本地版本（读 版本.txt 里的游戏版本）。"""
+    try:
+        with open(os.path.join(HERE, "版本.txt"), "r", encoding="utf-8") as f:
+            m = re.search(r"游戏版本 (\S+)", f.read())
+            return m.group(1) if m else ""
+    except OSError:
+        return ""
+
+
+def _remote_game_version() -> str:
+    """远端版本（去掉 tag 的 v 前缀）。"""
+    tag = check_remote_version()
+    return tag[1:] if tag.startswith("v") else tag
+
+class AutoUpdater(threading.Thread):
+    """自动更新：定期查 GitHub Releases，有新版就下载解压，等空闲后重启自己。
+
+    为什么重启用 os.execv 而不是 subprocess：
+    execv 是「进程替换自己」——PID 不变，systemd 不会当成进程退出，
+    父进程（systemd / nohup）完全无感，新代码立刻生效。
+
+    为什么等空闲：正在打的对局会被重启打断。
+    所以下载可以随时做，重启要等到没有进行中的对局。
+
+    全程只用 Python 标准库（urllib + zipfile），不依赖 curl / unzip。
+    """
+
+    CHECK_INTERVAL = 600.0      # 10 分钟查一次
+    IDLE_WAIT_MAX = 1800.0      # 最多等 30 分钟有人打完
+
+    def __init__(self, hub: "Hub"):
+        super().__init__(daemon=True)
+        self.hub = hub
+        self._stop = threading.Event()
+        self._pending = False      # 已经下载好、等着重启
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        # 启动后先等一会儿，别和服务器抢启动
+        if self._stop.wait(60.0):
+            return
+        while not self._stop.is_set():
+            try:
+                self._tick()
+            except Exception as exc:  # noqa: BLE001 - 更新失败绝不能影响服务器
+                print("[darkcard] 自动更新出错（不影响服务）：%s" % exc, flush=True)
+            self._stop.wait(self.CHECK_INTERVAL)
+
+    def _tick(self) -> None:
+        if not self._pending:
+            tag = check_remote_version()
+            if not tag:
+                return
+            print("[darkcard] 发现新版本 %s，开始下载…" % tag, flush=True)
+            if not self._download_and_stage():
+                return
+            self._pending = True
+
+        # 首选：热重载。不重启、不打断任何对局。
+        ok, err = self.hub.hot_reload()
+        if ok:
+            self.hub.notify_server_updated()
+            self._pending = False
+            print("[darkcard] 新版本已生效（热重载，未重启）", flush=True)
+            return
+
+        # 热重载失败（新代码有问题）：退回「等空闲后重启」
+        print("[darkcard] 热重载失败：%s" % err, flush=True)
+        print("[darkcard] 改为等没人打牌时重启应用新版本", flush=True)
+        waited = 0.0
+        while waited < self.IDLE_WAIT_MAX and not self._stop.is_set():
+            if not self.hub.has_active_match():
+                print("[darkcard] 正在重启以应用新版本…", flush=True)
+                self._exec_restart()
+                return
+            self._stop.wait(10.0)
+            waited += 10.0
+        if self._pending:
+            print("[darkcard] 等了太久还没空闲，本次不重启（下个周期再来）", flush=True)
+
+    def _download_and_stage(self) -> bool:
+        """下载并解压到当前目录。返回是否成功。"""
+        import urllib.request
+        import zipfile
+
+        url = "https://github.com/%s/releases/latest/download/darkcard-server.zip" % UPDATE_REPO
+        tmp = os.path.join(HERE, ".update.tmp.zip")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "darkcard-server"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data = r.read()
+            with open(tmp, "wb") as f:
+                f.write(data)
+            with zipfile.ZipFile(tmp) as z:
+                for name in z.namelist():
+                    # 只覆盖白名单里的文件，别让包里的东西乱写
+                    if name not in ("server.py", "engine.py", "cards.json",
+                                    "update.sh", "使用说明.txt", "版本.txt"):
+                        continue
+                    z.extract(name, HERE)
+        except Exception as exc:  # noqa: BLE001
+            print("[darkcard] 下载失败：%s" % exc, flush=True)
+            return False
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        # 写个标记：新代码已经在磁盘上，但当前进程还在跑旧代码。
+        # 标记让下次启动能知道自己是从哪一版升上来的。
+        try:
+            with open(os.path.join(HERE, ".updated_from"), "w", encoding="utf-8") as f:
+                f.write("%s -> %s\n" % (_local_game_version(), _remote_game_version()))
+        except OSError:
+            pass
+        print("[darkcard] 新文件已解压到 %s" % HERE, flush=True)
+        return True
+
+    def _exec_restart(self) -> None:
+        """进程替换自己：PID 不变，父进程无感。"""
+        import sys
+
+        args = [sys.executable] + sys.argv
+        try:
+            os.execv(sys.executable, args)
+        except Exception as exc:  # noqa: BLE001
+            print("[darkcard] 重启失败：%s" % exc, flush=True)
+
+
 # ---------------------------------------------------------------- HTTP
 
 class Handler(BaseHTTPRequestHandler):
@@ -905,7 +1139,20 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         cmd = parsed.path.rsplit("/", 1)[-1]
         body = self._read_json()
+        # 运维命令（reload）只接受本机请求
+        if cmd == "reload":
+            peer = self.client_address[0] if self.client_address else ""
+            if peer not in ("127.0.0.1", "::1"):
+                self._send({"ok": False, "error": "reload 只能在本机执行"})
+                return
+            body["_local"] = "1"
         self._send(self.api.handle(cmd, body))
+
+
+def _check_update_bg() -> None:
+    tag = check_remote_version()
+    if tag:
+        print("[darkcard] 有新版本 %s 可用（在本目录跑 bash update.sh 即可更新）" % tag, flush=True)
 
 
 def main() -> None:
@@ -916,6 +1163,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8737)
     ap.add_argument("--cards", default=CARDS_PATH)
     ap.add_argument("--store", default=STORE_PATH)
+    ap.add_argument("--no-auto-update", action="store_true",
+                    help="关闭自动更新（默认开启：自动查新版，热重载生效，不重启）")
     args = ap.parse_args()
 
     store = Store(args.store)
@@ -935,6 +1184,20 @@ def main() -> None:
     print("[darkcard] 规则版本 %s · 协议版本 %d" % (
         hub.rules_version, PROTOCOL_VERSION), flush=True)
     print("[darkcard] 内网穿透请把公网端口映射到 %d/tcp" % args.port, flush=True)
+    # 上次是不是刚更新过？是的话说明磁盘上的代码比刚才跑的还新
+    marker = os.path.join(HERE, ".updated_from")
+    if os.path.exists(marker):
+        try:
+            with open(marker, "r", encoding="utf-8") as f:
+                print("[darkcard] 本次由 %s 升级而来" % f.read().strip(), flush=True)
+        except OSError:
+            pass
+    if args.no_auto_update:
+        print("[darkcard] 自动更新已关闭（--no-auto-update）", flush=True)
+    else:
+        AutoUpdater(hub).start()
+        print("[darkcard] 自动更新已开启：每 %d 分钟查一次，有新版自动热重载（不重启）"
+              % int(AutoUpdater.CHECK_INTERVAL), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -37,6 +37,7 @@ func _ready() -> void:
 	client.rules_version = db.rules_version
 	client.command_result.connect(_on_cmd_result)
 	client.version_error.connect(_on_version_error)
+	client.server_updated.connect(_on_server_updated)
 	client.event_received.connect(_on_event)
 	client.online_count_changed.connect(_on_online_count)
 	client.disconnected.connect(func(r: String) -> void: _set_status("连接断开：" + r, UiPalette.RED))
@@ -352,6 +353,11 @@ func _on_version_error(message: String) -> void:
 	_disabled = true
 	for b in _lock_buttons():
 		b.disabled = true
+
+
+func _on_server_updated(new_rules: String) -> void:
+	# 服务器换规则了（热重载，不用重启）。提示一下，正在打的局会按旧规则打完。
+	_set_status("服务器已更新到规则 %s，当前这局仍按旧规则打完" % new_rules, UiPalette.GOLD)
 
 
 func _lock_buttons() -> Array:
