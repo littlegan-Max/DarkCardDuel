@@ -32,6 +32,8 @@ run "对手习惯模型" "$GODOT" --headless --path "$PROJ" --script res://tests
 run "生成对拍用例" python "$PROJ/train/export_parity.py" "$CASES"
 run "双引擎对拍" "$GODOT" --headless --path "$PROJ" --script res://tools/parity_check.gd
 run "不变量扫描" python "$PROJ/train/invariants.py" 800
+run "联机服务器自测" python "$PROJ/server/test_server.py"
+run "联机端到端（双客户端）" python "$PROJ/tools/run_online_test.py"
 
 echo
 if [ "$fail" -eq 0 ]; then

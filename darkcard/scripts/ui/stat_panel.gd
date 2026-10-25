@@ -124,6 +124,10 @@ func update_view(p: PlayerState, title: String, turn: int, db: CardDB) -> void:
     _cd.text = _cd_text(p, turn, db)
 
 
+func set_title(t: String) -> void:
+    _title.text = t
+
+
 func flash(color: Color) -> void:
     var tw := create_tween()
     modulate = color

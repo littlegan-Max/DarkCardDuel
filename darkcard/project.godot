@@ -7,10 +7,10 @@ config_version=5
 [application]
 
 config/name="暗牌技能对战"
-config/description="Dark Card Duel - rules engine vertical slice (rules 2.1)"
+config/description="Dark Card Duel - 1v1 simultaneous reveal, local + online (rules 2.1)"
 config/icon="res://icon.png"
-config/version="0.2.5"
-run/main_scene="res://scenes/Battle.tscn"
+config/version="0.3.0"
+run/main_scene="res://scenes/main/Main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
 [display]

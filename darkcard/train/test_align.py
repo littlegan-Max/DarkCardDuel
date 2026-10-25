@@ -174,7 +174,9 @@ ok("handgun undodgeable", g.p1.hp == 150)
 
 g = duel(3, 0, 0, 300, 300)
 g.play_turn("wei_biao", "xi")
-ok("wei_biao self yun on steal", g.p0.hp == 300 and g.p0.yun == 10)
+# 2026-10-25 朋友反馈：微镖被吸，得 1 运的是「出吸的人」
+ok("absorber gains 1 yun on wei_biao", g.p0.hp == 300 and g.p1.yun == 10
+   and g.p0.yun == 0, f"yun={g.p0.yun}/{g.p1.yun}")
 
 g = duel(5, 0, 0, 300, 300)
 prep(g, 0, ["zhong_fang"])
@@ -520,6 +522,14 @@ g = duel(5, 0, 0, 300, 300)
 prep(g, 0, ["zhong_fang"])
 g.play_turn("jiang_fei", "xi")
 ok("xi gains 2 from jiang_fei", g.p1.yun == 20, f"yun1={g.p1.yun}")
+
+# 2026-10-25 朋友反馈：飞龙在天被吸，吸者也得 2 运
+g = duel(5, 0, 0, 300, 300)
+prep(g, 0, ["jue_xing_zhong_fang"])
+g.play_turn("fei_long_zai_tian", "xi")
+ok("fei_long_zai_tian negated by xi", g.p0.hp == 300)
+ok("xi gains 2 from fei_long_zai_tian", g.p1.yun == 20, f"yun1={g.p1.yun}")
+ok("fei_long_zai_tian user gains nothing", g.p0.yun == 0, f"yun0={g.p0.yun}")
 
 g = duel(5, 30, 0, 300, 300)
 g.play_turn("chang_gong_fen_san", "fu_yun")

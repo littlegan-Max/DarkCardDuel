@@ -317,7 +317,10 @@ func _test_batch2() -> void:
     var d7 := _duel(3, 0, 0, 300, 300)
     d7.play_turn("wei_biao", "xi")
     _ok("wei_biao negated by xi", d7.state.players[0].hp == 300)
-    _ok("wei_biao user gains 1 yun when stolen (C9b)", d7.state.players[0].yun == 10)
+    # 2026-10-25 朋友反馈：微镖被吸，得 1 运的是「出吸的人」，不是微镖使用者
+    _ok("the absorber gains 1 yun when stealing wei_biao",
+        d7.state.players[1].yun == 10 and d7.state.players[0].yun == 0,
+        "yun=%d/%d" % [d7.state.players[0].yun, d7.state.players[1].yun])
 
     var d8 := _duel(5, 0, 0, 300, 300)
     d8.state.players[0].history.append("zhong_fang")
@@ -737,6 +740,16 @@ func _test_batch4() -> void:
     d5.play_turn("jiang_fei", "xi")
     _ok("xi gains 2 from jiang_fei (C9)", d5.state.players[1].yun == 20,
         "yun1=%d" % d5.state.players[1].yun)
+
+    print("[batch5 · friend ruling: fei_long_zai_tian stolen gives 2 yun]")
+    var d5b := _duel(5, 0, 0, 300, 300)
+    _prep(d5b, 0, ["jue_xing_zhong_fang"])
+    d5b.play_turn("fei_long_zai_tian", "xi")
+    _ok("fei_long_zai_tian is negated by xi", d5b.state.players[0].hp == 300)
+    _ok("xi gains 2 from fei_long_zai_tian (same as jiang_fei)",
+        d5b.state.players[1].yun == 20, "yun1=%d" % d5b.state.players[1].yun)
+    _ok("fei_long_zai_tian's user gains nothing",
+        d5b.state.players[0].yun == 0, "yun0=%d" % d5b.state.players[0].yun)
 
     print("[batch4 · ruling 2/9: fu_yun blocks list]")
     var d6 := _duel(5, 30, 0, 300, 300)

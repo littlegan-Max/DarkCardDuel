@@ -4,6 +4,7 @@ const MATCH_SEED := 20261024
 
 var db: CardDB
 var duel: Duel
+var controller: MatchController
 var rng := RandomNumberGenerator.new()
 var selected_id := ""
 var filter := "all"
@@ -186,7 +187,7 @@ func _build_stage() -> Control:
     cards.offset_bottom = 190
 
     _enemy_slot = CardSlot.new()
-    _enemy_slot.set_owner_text("乙 · 对手")
+    _enemy_slot.set_owner_text("乙 · " + _opponent_title())
     _enemy_slot.set_back()
     cards.add_child(_enemy_slot)
 
@@ -449,9 +450,29 @@ func _build_gameover() -> void:
     v.add_child(again)
 
 
+## 联机模式：由大厅在切场景前调用，把已建好的控制器交给对战界面
+func setup_online(ctrl: MatchController) -> void:
+    controller = ctrl
+    duel = controller.duel
+    controller.turn_resolved.connect(_on_turn_resolved)
+    controller.opponent_joined.connect(func(n: String) -> void:
+        if _enemy_panel != null:
+            _enemy_panel.set_title(n))
+    controller.opponent_left.connect(func() -> void:
+        _result.text = "对手已离开"
+        _result.add_theme_color_override("font_color", UiPalette.RED))
+    controller.state_mismatch.connect(func(detail: String) -> void:
+        push_warning("联机状态不一致: " + detail))
+    _start_match()
+
+
 func _start_match() -> void:
-    duel = Duel.new(db)
-    rng.seed = MATCH_SEED + _match_no
+    # 单机：控制器内部建好对局；联机：控制器已由大厅接好，这里只重置界面
+    if controller == null or controller.mode == MatchController.MODE_LOCAL:
+        controller = MatchController.new()
+        controller.setup_local(db, MATCH_SEED + _match_no)
+        controller.turn_resolved.connect(_on_turn_resolved)
+    duel = controller.duel
     _match_no += 1
     selected_id = ""
     busy = false
@@ -491,7 +512,7 @@ func _refresh() -> void:
     var st := duel.state
     var shown := _reveal_turn if _reveal_turn > 0 else st.turn + 1
     _turn_label.text = "第 %d 回合" % shown
-    _enemy_panel.update_view(st.players[1], "对手 · 影武者", st.turn, db)
+    _enemy_panel.update_view(st.players[1], "对手 · " + _opponent_title(), st.turn, db)
     _self_panel.update_view(st.players[0], "你 · 甲", st.turn, db)
     _refresh_combo()
     _refresh_tiles()
@@ -515,10 +536,22 @@ func _refresh() -> void:
         _selected_label.add_theme_color_override("font_color", UiPalette.DIM)
 
 
+func _can_play(cid: String) -> bool:
+    if controller != null:
+        return controller.can_play(cid)
+    return duel != null and duel.can_play(0, cid)
+
+
+func _opponent_title() -> String:
+    if controller != null and controller.mode == MatchController.MODE_ONLINE:
+        return controller.opponent_name
+    return "影武者"
+
+
 func _refresh_tiles() -> void:
     for tile in _tiles:
         var d := db.get_def(tile.card_id)
-        var legal := duel.can_play(0, tile.card_id)
+        var legal := _can_play(tile.card_id)
         var reason := "" if legal else _reason(tile.card_id)
         tile.set_state(legal, reason, tile.card_id == selected_id, _cd_text(tile.card_id))
         tile.visible = _matches(d)
@@ -608,7 +641,7 @@ func _on_tile_picked(cid: String) -> void:
         return
     if _detail != null and _detail.visible:
         return
-    if not duel.can_play(0, cid):
+    if not _can_play(cid):
         return
     selected_id = cid
     _self_slot.set_card(cid, db, "")
@@ -618,7 +651,7 @@ func _on_tile_picked(cid: String) -> void:
 func _on_tile_long_pressed(cid: String) -> void:
     if duel == null or duel.state.over:
         return
-    var ok := duel.can_play(0, cid)
+    var ok := _can_play(cid)
     var s := "现在可以出" if ok else "不可出 · " + _reason(cid)
     _detail.open(cid, db, s, ok)
 
@@ -705,20 +738,24 @@ func _save_opponent_model() -> void:
 func _on_confirm() -> void:
     if busy or duel == null or selected_id == "":
         return
-    if not duel.can_play(0, selected_id):
+    if controller == null or not controller.can_play(selected_id):
         return
-    var a := selected_id
-    var b := ""
-    if debug_ai_card != "":
-        b = debug_ai_card
-    else:
-        b = LearnedAI.choose(duel, 1, rng)
-    if b == "":
-        b = "yun"
-    _resolve_sequence(a, b)
+    # 联机：提交给服务器，等它的 turn_resolve 事件回来才结算
+    # 单机：控制器内部选 AI 的牌并立刻结算，_on_turn_resolved 接手
+    controller.submit(selected_id, debug_ai_card)
+    if controller.mode == MatchController.MODE_ONLINE:
+        busy = true
+        _result.text = "已出牌，等待对手…"
+        _result.add_theme_color_override("font_color", UiPalette.GOLD)
+        _confirm.disabled = true
 
 
-func _resolve_sequence(a: String, b: String) -> void:
+func _on_turn_resolved(cards: Array, events: Array) -> void:
+    # 单机与联机共用同一条结算 / 表现路径
+    if cards.size() < 2:
+        return
+    var a := str(cards[0])
+    var b := str(cards[1])
     busy = true
     _enemy_slot.set_back()
     _result.text = "同时翻开…"
@@ -726,9 +763,8 @@ func _resolve_sequence(a: String, b: String) -> void:
     await get_tree().create_timer(0.18).timeout
 
     _reveal_turn = duel.state.turn + 1
-    # 记录玩家在"这个情境"下出的牌 → 持续学习出招习惯
+    # 记录玩家在"这个情境"下出的牌 → 持续学习出牌习惯
     var human_ctx := _context_for(0)
-    var events := duel.play_turn(a, b)
     if opponent_model != null and a != "":
         opponent_model.observe(human_ctx, a, _tags_of(a),
             _is_combo_setup(a), _is_combo_finish(a))
@@ -761,6 +797,11 @@ func _resolve_sequence(a: String, b: String) -> void:
 
 func _on_timeout() -> void:
     if busy or duel == null or duel.state.over:
+        return
+    # 联机：超时由服务器看门狗替我们出牌（服务器是权威，不能本地擅自改）
+    if controller != null and controller.mode == MatchController.MODE_ONLINE:
+        _result.text = "超时，等待服务器判定…"
+        _result.add_theme_color_override("font_color", UiPalette.RED)
         return
     var pick := ""
     if duel.can_play(0, "yun"):

@@ -29,7 +29,8 @@ var kill_tag: String = ""            # "nengbao"：命中该 tag 的牌 → 代�
 var yun_block: String = ""           # "" | "consume"（运挡为抵消）| "steal_gain"（究掐）
 var dodgeable: bool = true           # 手枪为 false（不可被闪）
 var on_blocked_hit: int = 0          # 被挡时，挡者反受伤害（长攻分散）
-var stolen_self_yun: int = 0         # 被吸时自己获得运（微镖）
+var stolen_self_yun: int = 0         # 被吸时额外获得的运（微镖）
+var stolen_yun_to: String = "self"   # 这笔运给谁：self=被吸者自己 / stole=出吸的人
 var steal_multiplier: int = 1        # 超级吸：吸到的运 ×2
 var is_counter: bool = false         # 反制型（吸/超级吸）
 
@@ -59,6 +60,7 @@ static func from_dict(src: Dictionary) -> SkillDef:
     s.dodgeable = bool(src.get("dodgeable", true))
     s.on_blocked_hit = int(src.get("on_blocked_hit", 0))
     s.stolen_self_yun = int(src.get("stolen_self_yun", 0))
+    s.stolen_yun_to = str(src.get("stolen_yun_to", "self"))
     s.steal_multiplier = int(src.get("steal_multiplier", 1))
     s.is_counter = bool(src.get("is_counter", false))
     s.time_spread = int(src.get("time_spread", 0))

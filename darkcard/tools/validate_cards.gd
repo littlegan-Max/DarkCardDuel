@@ -72,6 +72,10 @@ func _initialize() -> void:
             errors.append("%s: reflect_percent out of range" % cid)
         if d.reflect_percent > 0 and d.reflect_cap <= 0:
             errors.append("%s: reflect_percent needs a positive reflect_cap" % cid)
+        if d.stolen_yun_to != "self" and d.stolen_yun_to != "stole":
+            errors.append("%s: unknown stolen_yun_to %s" % [cid, d.stolen_yun_to])
+        if d.stolen_self_yun != 0 and d.countered_by.has("xi") == false:
+            errors.append("%s: stolen_self_yun needs xi in countered_by" % cid)
         for c in d.combo:
             if not db.has_card(c):
                 errors.append("%s: combo missing %s" % [cid, c])

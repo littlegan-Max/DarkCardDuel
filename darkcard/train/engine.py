@@ -51,6 +51,8 @@ class Card:
     time_spread: int = 0
     reflect_percent: int = 0
     reflect_cap: int = 0
+    # 被吸额外得运给谁：self=被吸者 / stole=出吸的人（2026-10-25 朋友反馈）
+    stolen_yun_to: str = "self"
 
     @property
     def negative(self) -> bool:
@@ -139,6 +141,7 @@ class DB:
                 dodgeable=bool(item.get("dodgeable", True)),
                 on_blocked_hit=int(item.get("on_blocked_hit", 0)),
                 stolen_self_yun=int(item.get("stolen_self_yun", 0)),
+                stolen_yun_to=str(item.get("stolen_yun_to", "self")),
                 steal_multiplier=int(item.get("steal_multiplier", 1)),
                 is_counter=bool(item.get("is_counter", False)),
                 blocks=tuple(item.get("blocks", [])),
@@ -249,10 +252,42 @@ class Game:
         need = self.effective_cost(i, c)
         return need <= 0 or p.yun >= need
 
+    def play_reason(self, i: int, cid: str) -> str:
+        """为什么这张牌现在不能出（与 GDScript `Duel._reason()` 逐条对齐）。
+
+        联机服务器用它把拒绝理由回传给客户端，客户端原样显示给玩家，
+        两边口径必须一致，否则玩家会看到「客户端说能出、服务器说不能出」。
+        """
+        if self.over:
+            return "对局已结束"
+        p = self.player(i)
+        if p.pending_card != "":
+            return "本回合已经出过牌了"
+        if p.skip_turn == self.turn:
+            return "被鄙视"
+        if cid == PASS_ID:
+            return "只有被鄙视时才能空过"
+        c = self.db.cards.get(cid)
+        if c is None:
+            return "没有这张牌"
+        if self.turn == 0 and cid != "yun":
+            return "首回合只能出运"
+        if c.combo and not c.combo_optional:
+            bypass = cid == "jiang_fei" and p.fly_ready
+            if not bypass and not suffix_matches(p.history, c.combo):
+                return "连招未满足"
+        pool = c.pool_id or c.id
+        if not p.can_use(pool, c.cooldown, self.turn):
+            return "冷却中"
+        if c.cost_kind != "all_in":
+            need = self.effective_cost(i, c)
+            if need > 0 and p.yun < need:
+                return "运不足"
+        return "这张牌现在不能出"
+
     def legal_cards(self, i: int) -> list[str]:
         out = [cid for cid in self.db.order if self.can_play(i, cid)]
-        if self.can_play(i, PASS_ID):
-            out.append(PASS_ID)
+        if self.can_play(i, PASS_ID):            out.append(PASS_ID)
         return out
 
     # ---------- 提交与结算 ----------
@@ -470,7 +505,7 @@ class _Ctx:
             if "xi" in atk.countered_by:
                 self.negate(i, "xi")
                 gain = self.paid[i] * mult
-                if atk.id in ("jiang_long", "jiang_fei"):
+                if atk.id in ("jiang_long", "jiang_fei", "fei_long_zai_tian"):
                     gain = 20 * mult            # C9：被吸伤害归 0，但吸者仍 +2 运
                 if atk.id == "fu_yun":
                     gj.yun -= 10                    # 裁定 2：扣出吸的人
@@ -481,7 +516,9 @@ class _Ctx:
                     turns = max(1, gain // 10)
                     gi.add_effect(atk.time_spread, turns, self.turn + 1, j, 4)
                 if atk.stolen_self_yun:
-                    gi.yun += atk.stolen_self_yun
+                    # 被吸额外得运：谁得由卡表的 stolen_yun_to 决定
+                    who = gi if atk.stolen_yun_to != "stole" else gj
+                    who.yun += atk.stolen_self_yun
                 return
 
         if dfn.id in ("yun", "qiang_hua_yun") and "yun" in atk.countered_by:

@@ -17,6 +17,15 @@ build/
 .scratch/
 .workbuddy/
 
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 联机测试的临时产物
+.godot_test_user/
+server/store.json
+server/store.test.json
+
 # 系统
 .DS_Store
 Thumbs.db

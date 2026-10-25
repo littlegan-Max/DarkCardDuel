@@ -213,12 +213,12 @@ func _try_block(ctx: ResolutionContext, i: int, j: int, events: Array) -> void:
             return
         if atk.has_counter("xi"):
             _negate(ctx, i, "xi", events)
-            # C9：降龙/降飞被吸时伤害归 0，但吸者照样 +2 运（覆盖 C10 的"按实付运数"）
+            # C9：降龙/降飞/飞龙在天被吸时伤害归 0，但吸者照样 +2 运（覆盖 C10 的"按实付运数"）
             var gain: int = ctx.paid[i] * mult
-            if atk.id == "jiang_long" or atk.id == "jiang_fei":
+            if atk.id == "jiang_long" or atk.id == "jiang_fei" or atk.id == "fei_long_zai_tian":
                 gain = 20 * mult
             if atk.id == "fu_yun":
-                # 裁定 2：负运被吸 → 扣"出吸的人" 1 运
+                # 负运被吸 → 扣"出吸的人" 1 运（裁定 2；2026-10-25 朋友反馈复核后不变）
                 ctx.state.players[j].yun -= 10
                 events.append({"t": "YUN", "player": j, "amount": -10})
                 return
@@ -230,9 +230,14 @@ func _try_block(ctx: ResolutionContext, i: int, j: int, events: Array) -> void:
                 var turns := maxi(1, gain / Units.YUN)
                 ctx.state.players[i].add_effect(atk.time_spread, turns, ctx.turn + 1, j, "time_spread")
                 events.append({"t": "TIME_SPREAD", "player": i, "amount": atk.time_spread, "turns": turns})
+            # 被吸额外得运：谁得由卡表的 stolen_yun_to 决定
+            #   "self"  = 被吸者自己得（原文 C9b 微镖口径）
+            #   "stole" = 出吸的人得（2026-10-25 朋友反馈：微镖该由吸者得）
             if atk.stolen_self_yun != 0:
-                ctx.state.players[i].yun += atk.stolen_self_yun
-                events.append({"t": "YUN", "player": i, "amount": atk.stolen_self_yun})
+                var to_self := atk.stolen_yun_to != "stole"
+                var who := i if to_self else j
+                ctx.state.players[who].yun += atk.stolen_self_yun
+                events.append({"t": "YUN", "player": who, "amount": atk.stolen_self_yun})
             return
 
     # 6) 运 / 强化运挡
