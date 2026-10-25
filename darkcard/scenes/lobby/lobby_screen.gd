@@ -2,13 +2,27 @@ extends Control
 
 # 联机大厅：连服务器、起昵称、匹配、开房间、好友、邀请好友。
 #
-# 这是玩家进联机模式看到的第一个画面。所有操作都通过 NetClient 发指令，
-# 结果由 command_result / event_received 两个信号回来刷新界面。
+# 版面自上而下四段：
+#   1. 顶栏：标题 + 在线人数 + 「服务器」（连接设置收进弹层）+ 主菜单
+#   2. 身份卡：头像 / 昵称 / 评分 + 本屏唯一的主操作「快速匹配」
+#   3. 房间条：进了房间才出现，房号、成员、开始 / 邀请 / 离开都在这
+#   4. 页签：房间 / 在线 / 好友 —— 三张列表共用同一块地方，
+#      不再把四块面板竖着堆成一条长条
+# 底部是一条状态条，所有回执都落在那里。
+#
+# 所有操作都通过 NetClient 发指令，结果由 command_result / event_received
+# 两个信号回来刷新界面。
+
+const TAB_ROOMS := 0
+const TAB_PLAYERS := 1
+const TAB_FRIENDS := 2
+const TAB_NAMES := ["房间", "在线", "好友"]
 
 var client: NetClient
 var db: CardDB
 
 var _status: Label
+var _status_dot: Panel
 var _online_label: Label
 var _name_edit: LineEdit
 var _host_edit: LineEdit
@@ -17,6 +31,7 @@ var _room_code_edit: LineEdit
 var _friend_name_edit: LineEdit
 var _room_list: VBoxContainer
 var _friend_list: VBoxContainer
+var _players_list: VBoxContainer
 var _status_box: VBoxContainer
 var _match_btn: Button
 var _create_btn: Button
@@ -29,16 +44,30 @@ var _turn_seconds := 20.0   # 当前房间的出牌时间
 var _my_mmr := 0            # 我的评分
 var _turn_opt: OptionButton # 出牌时间选择
 var _match_info: Label      # 匹配中的等待信息
-var _room_panel: VBoxContainer   # 房间信息面板（进房间才显示）
+var _room_panel: Control    # 房间条（进房间才显示）
 var _room_info: Label
+var _room_code_label: Label
+var _room_time_label: PanelContainer
+var _room_time_text: Label
 var _room_members: VBoxContainer   # 房间成员（房主能移除）
-var _room_members_data: Array = []   # 当前房间的成员
+var _room_members_data: Array = [] # 当前房间的成员
 var _start_btn: Button      # 房主的「开始」
 var _leave_btn: Button      # 离开房间
-var _players_list: VBoxContainer   # 在线玩家（带状态）
+var _hero_name: Label
+var _hero_avatar: PanelContainer
+var _avatar_letter: Label
+var _conn_label: Label
+var _conn_dot: Panel
+var _rating_label: Label
+var _tab_btns: Array = []
+var _pages: Array = []
+var _tab := TAB_ROOMS
+var _settings_layer: Control
 var _refresh_timer := 0.0
+var _roster_timer := 0.0    # 名单轮询的独立计时（见 _process）
 var _pending_friend_invite := ""
 var _disabled := false
+var _connected := false   # 真的连上了（有存档 != 连着）
 
 
 func _ready() -> void:
@@ -57,229 +86,502 @@ func _ready() -> void:
 	client.server_outdated.connect(_on_server_outdated)
 	client.event_received.connect(_on_event)
 	client.online_count_changed.connect(_on_online_count)
-	client.disconnected.connect(func(r: String) -> void: _set_status("连接断开：" + r, UiPalette.RED))
+	client.disconnected.connect(func(r: String) -> void:
+		_connected = false
+		_sync_identity()
+		_set_status("连接断开：" + r, UiPalette.RED))
 	_build_ui()
 	# HTTPRequest 要节点在场景树里，重连必须等 UI 建完再发
 	_refresh_status.call_deferred()
 
 
+# ---------------------------------------------------------------- 搭界面
+
 func _build_ui() -> void:
-	var bg := TextureRect.new()
-	bg.texture = UiPalette.gradient(UiPalette.BG_TOP, UiPalette.BG_BOTTOM)
-	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	bg.stretch_mode = TextureRect.STRETCH_SCALE
-	add_child(bg)
-	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	UiKit.backdrop(self)
 
 	var margin := MarginContainer.new()
 	add_child(margin)
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 16)
-	margin.add_theme_constant_override("margin_right", 16)
+	margin.add_theme_constant_override("margin_left", 18)
+	margin.add_theme_constant_override("margin_right", 18)
 	margin.add_theme_constant_override("margin_top", 14)
 	margin.add_theme_constant_override("margin_bottom", 14)
 
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 10)
+	col.add_theme_constant_override("separation", 11)
 	margin.add_child(col)
 
-	# —— 顶栏：标题 + 在线人数 + 状态 ——
+	_build_header(col)
+	_build_hero(col)
+	_build_room_banner(col)
+	_build_tabs(col)
+	_build_body(col)
+	_build_statusbar(col)
+
+	_build_settings()
+
+
+func _build_header(col: VBoxContainer) -> void:
 	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 8)
 	col.add_child(top)
-	var title := _lab("暗牌 · 联机大厅", 18, UiPalette.GOLD)
-	top.add_child(title)
-	var sp := Control.new()
-	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(sp)
-	_online_label = _lab("在线 0", 12, UiPalette.TEAL)
-	top.add_child(_online_label)
-	var home := _btn("主菜单", _on_go_home)
-	home.custom_minimum_size = Vector2(56, 28)
+
+	var titles := VBoxContainer.new()
+	titles.add_theme_constant_override("separation", 0)
+	top.add_child(titles)
+	titles.add_child(UiKit.kicker("DARK CARD DUEL", UiPalette.GOLD_DEEP))
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 8)
+	titles.add_child(line)
+	line.add_child(UiKit.label("联机大厅", 21, UiPalette.GOLD))
+	line.add_child(UiKit.chip("v" + str(ProjectSettings.get_setting(
+		"application/config/version", "0")), UiPalette.DIM))
+
+	top.add_child(UiKit.spacer())
+
+	var online_chip := PanelContainer.new()
+	var ob := StyleBoxFlat.new()
+	ob.bg_color = Color(0.25, 0.75, 0.62, 0.10)
+	ob.border_color = Color(0.25, 0.75, 0.62, 0.30)
+	ob.set_border_width_all(1)
+	ob.set_corner_radius_all(9)
+	ob.content_margin_left = 9
+	ob.content_margin_right = 9
+	ob.content_margin_top = 5
+	ob.content_margin_bottom = 5
+	online_chip.add_theme_stylebox_override("panel", ob)
+	online_chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var orow := HBoxContainer.new()
+	orow.add_theme_constant_override("separation", 5)
+	online_chip.add_child(orow)
+	orow.add_child(UiKit.dot(UiPalette.TEAL, 6))
+	_online_label = UiKit.label("在线 0", 11, UiPalette.TEAL)
+	orow.add_child(_online_label)
+	top.add_child(online_chip)
+
+	var cfg := UiKit.ghost("服务器", 30, 9)
+	cfg.custom_minimum_size.x = 58
+	cfg.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	cfg.pressed.connect(_open_settings)
+	top.add_child(cfg)
+
+	var home := UiKit.ghost("主菜单", 30, 9)
+	home.custom_minimum_size.x = 58
+	home.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	home.pressed.connect(_on_go_home)
 	top.add_child(home)
 
-	_status = _lab("未连接", 11, UiPalette.DIM)
-	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(_status)
 
-	# —— 服务器设置 ——
-	col.add_child(_panel("服务器", _build_server()))
-
-	# —— 匹配 / 房间 ——
-	col.add_child(_panel("对战", _build_match()))
-
-	# —— 房间列表 ——
-	col.add_child(_panel("房间列表", _build_rooms()))
-
-	# —— 在线玩家（带状态：空闲 / 匹配中 / 房间中 / 对战中 / 人机对战）——
-	_players_list = VBoxContainer.new()
-	_players_list.add_theme_constant_override("separation", 4)
-	col.add_child(_panel("在线玩家", _players_list))
-
-	# —— 好友 ——
-	col.add_child(_panel("好友", _build_friends()))
-
-	# —— 状态条 ——
-	_status_box = VBoxContainer.new()
-	col.add_child(_status_box)
-
-
-func _panel(title: String, content: Control) -> Control:
+func _build_hero(col: VBoxContainer) -> void:
 	var pc := PanelContainer.new()
-	var sb := UiPalette.panel_box(UiPalette.PANEL_SOFT, 14, UiPalette.LINE)
-	sb.set_content_margin_all(10)
-	pc.add_theme_stylebox_override("panel", sb)
+	pc.add_theme_stylebox_override("panel",
+		UiKit.card(Color("#161E30"), 18, Color("#2C3A58")))
+	col.add_child(pc)
 
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 6)
+	v.add_theme_constant_override("separation", 11)
 	pc.add_child(v)
-	v.add_child(_lab(title, 12, UiPalette.GOLD))
-	v.add_child(content)
-	return pc
 
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 11)
+	v.add_child(row)
 
-func _build_server() -> Control:
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 6)
+	_hero_avatar = UiKit.avatar("我", UiPalette.TEAL, 46)
+	_avatar_letter = _hero_avatar.get_child(0) as Label
+	row.add_child(_hero_avatar)
 
-	var row1 := HBoxContainer.new()
-	row1.add_theme_constant_override("separation", 6)
-	v.add_child(row1)
-	row1.add_child(_lab("昵称", 11, UiPalette.DIM))
-	_name_edit = LineEdit.new()
-	_name_edit.text = client.player_name
-	_name_edit.placeholder_text = "给自己起个名字"
-	_name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_name_edit.custom_minimum_size.y = 30
-	_name_edit.text_changed.connect(func(t: String) -> void: client.player_name = t)
-	row1.add_child(_name_edit)
+	var who := VBoxContainer.new()
+	who.add_theme_constant_override("separation", 3)
+	who.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	who.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(who)
 
-	var row2 := HBoxContainer.new()
-	row2.add_theme_constant_override("separation", 6)
-	v.add_child(row2)
-	row2.add_child(_lab("地址", 11, UiPalette.DIM))
-	_host_edit = LineEdit.new()
-	_host_edit.text = client.host
-	_host_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_host_edit.custom_minimum_size.y = 30
-	row2.add_child(_host_edit)
-	_port_edit = LineEdit.new()
-	_port_edit.text = str(client.port)
-	_port_edit.custom_minimum_size = Vector2(70, 30)
-	row2.add_child(_port_edit)
+	_hero_name = UiKit.label("未命名玩家", 16, UiPalette.TEXT)
+	who.add_child(_hero_name)
 
-	var row3 := HBoxContainer.new()
-	row3.add_theme_constant_override("separation", 8)
-	v.add_child(row3)
-	var conn := _btn("连接服务器", _on_connect)
-	conn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row3.add_child(conn)
-	var re := _btn("重连", _on_reconnect)
-	re.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row3.add_child(re)
-	return v
+	var sub := HBoxContainer.new()
+	sub.add_theme_constant_override("separation", 6)
+	who.add_child(sub)
+	_conn_dot = UiKit.dot(UiPalette.DIM, 6)
+	sub.add_child(_conn_dot)
+	_conn_label = UiKit.label("未连接服务器", 11, UiPalette.DIM)
+	sub.add_child(_conn_label)
 
+	var rating := PanelContainer.new()
+	var rb := StyleBoxFlat.new()
+	rb.bg_color = Color(0.91, 0.75, 0.48, 0.10)
+	rb.border_color = Color(0.91, 0.75, 0.48, 0.28)
+	rb.set_border_width_all(1)
+	rb.set_corner_radius_all(10)
+	rb.content_margin_left = 11
+	rb.content_margin_right = 11
+	rb.content_margin_top = 7
+	rb.content_margin_bottom = 7
+	rating.add_theme_stylebox_override("panel", rb)
+	rating.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_rating_label = UiKit.label("评分 —", 12, UiPalette.GOLD)
+	rating.add_child(_rating_label)
+	row.add_child(rating)
 
-func _build_match() -> Control:
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 6)
+	# 主操作：整屏只此一个金按钮
+	_match_btn = UiKit.primary("快速匹配", 50, 14)
+	_match_btn.pressed.connect(_on_matchmake)
+	v.add_child(_match_btn)
 
-	var row1 := HBoxContainer.new()
-	row1.add_theme_constant_override("separation", 8)
-	v.add_child(row1)
-	_match_btn = _btn("快速匹配", _on_matchmake)
-	_match_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row1.add_child(_match_btn)
-	_create_btn = _btn("创建房间", _on_create_room)
-	_create_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row1.add_child(_create_btn)
-
-	var row2 := HBoxContainer.new()
-	row2.add_theme_constant_override("separation", 6)
-	v.add_child(row2)
-	row2.add_child(_lab("房号", 11, UiPalette.DIM))
-	_room_code_edit = LineEdit.new()
-	_room_code_edit.placeholder_text = "6 位房号"
-	_room_code_edit.max_length = 6
-	_room_code_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_room_code_edit.custom_minimum_size.y = 30
-	row2.add_child(_room_code_edit)
-	_join_btn = _btn("加入", _on_join_room)
-	row2.add_child(_join_btn)
-
-	var row3 := HBoxContainer.new()
-	row3.add_theme_constant_override("separation", 6)
-	v.add_child(row3)
-	_invite_btn = _btn("邀请好友进本房间", _on_invite)
-	_invite_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row3.add_child(_invite_btn)
-
-	# 出牌时间：自建房由房主定，匹配固定 10 秒
-	var row4 := HBoxContainer.new()
-	row4.add_theme_constant_override("separation", 6)
-	v.add_child(row4)
-	row4.add_child(_lab("出牌时间", 11, UiPalette.DIM))
-	_turn_opt = OptionButton.new()
-	for sec in [5, 10, 15, 20, 30, 60]:
-		_turn_opt.add_item("%d 秒" % sec, sec)
-	_turn_opt.select(3)   # 默认 20 秒
-	_turn_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_turn_opt.item_selected.connect(_on_turn_seconds_changed)
-	row4.add_child(_turn_opt)
-
-	# 匹配中的等待信息
-	_match_info = _lab("", 11, UiPalette.GOLD)
+	_match_info = UiKit.label("", 11, UiPalette.GOLD)
+	_match_info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_match_info.visible = false
 	v.add_child(_match_info)
 
-	# 房间信息面板（进了房间才显示）
-	_room_panel = VBoxContainer.new()
-	_room_panel.add_theme_constant_override("separation", 6)
+
+func _build_room_banner(col: VBoxContainer) -> void:
+	_room_panel = PanelContainer.new()
+	_room_panel.add_theme_stylebox_override("panel",
+		UiKit.card(Color("#1C2438"), 16, UiPalette.GOLD_DEEP))
 	_room_panel.visible = false
-	v.add_child(_room_panel)
-	_room_info = _lab("", 11, UiPalette.TEXT)
+	col.add_child(_room_panel)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	_room_panel.add_child(v)
+
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 8)
+	v.add_child(top)
+	_room_code_label = UiKit.label("房间 ——", 15, UiPalette.GOLD)
+	top.add_child(_room_code_label)
+	top.add_child(UiKit.spacer())
+	_room_time_label = UiKit.chip("出牌 20 秒", UiPalette.DIM)
+	_room_time_text = _room_time_label.get_child(0) as Label
+	top.add_child(_room_time_label)
+
+	_room_info = UiKit.label("", 11, UiPalette.DIM)
 	_room_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_room_panel.add_child(_room_info)
+	v.add_child(_room_info)
+
 	_room_members = VBoxContainer.new()
-	_room_members.add_theme_constant_override("separation", 3)
-	_room_panel.add_child(_room_members)
-	var row5 := HBoxContainer.new()
-	row5.add_theme_constant_override("separation", 6)
-	_room_panel.add_child(row5)
-	_start_btn = _btn("开始这一局", _on_start_room)
+	_room_members.add_theme_constant_override("separation", 4)
+	v.add_child(_room_members)
+
+	var acts := HBoxContainer.new()
+	acts.add_theme_constant_override("separation", 8)
+	v.add_child(acts)
+	_start_btn = UiKit.primary("开始这一局", 36, 10)
+	_start_btn.add_theme_font_size_override("font_size", 13)
 	_start_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row5.add_child(_start_btn)
-	_leave_btn = _btn("离开房间", _on_leave_room)
-	row5.add_child(_leave_btn)
+	_start_btn.pressed.connect(_on_start_room)
+	acts.add_child(_start_btn)
+
+	_invite_btn = UiKit.ghost("邀请好友", 36, 10)
+	_invite_btn.custom_minimum_size.x = 84
+	_invite_btn.pressed.connect(_on_invite)
+	acts.add_child(_invite_btn)
+
+	_leave_btn = UiKit.danger("离开", 36, 10)
+	_leave_btn.custom_minimum_size.x = 64
+	_leave_btn.pressed.connect(_on_leave_room)
+	acts.add_child(_leave_btn)
+
+
+func _build_tabs(col: VBoxContainer) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	col.add_child(row)
+	for i in TAB_NAMES.size():
+		var b := UiKit.tab(TAB_NAMES[i])
+		b.pressed.connect(_switch_tab.bind(i))
+		row.add_child(b)
+		_tab_btns.append(b)
+
+
+func _build_body(col: VBoxContainer) -> void:
+	# 三张列表共用一个「内容区」面板：列表没几条时，空白也落在面板里，
+	# 不会看着像画面下半截漏风。
+	var pc := PanelContainer.new()
+	pc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	pc.add_theme_stylebox_override("panel",
+		UiKit.card(Color("#0F1626"), 16, Color("#1E2740"), 12))
+	col.add_child(pc)
+
+	var body := Control.new()
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	pc.add_child(body)
+
+
+	_pages = [_build_page_rooms(), _build_page_players(), _build_page_friends()]
+	for i in _pages.size():
+		var p: Control = _pages[i]
+		body.add_child(p)
+		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		p.visible = i == TAB_ROOMS
+	_switch_tab(TAB_ROOMS)
+
+
+func _build_page_rooms() -> Control:
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+
+	var r1 := HBoxContainer.new()
+	r1.add_theme_constant_override("separation", 8)
+	v.add_child(r1)
+	_room_code_edit = UiKit.input("输入 6 位房号加入")
+	_room_code_edit.max_length = 6
+	_room_code_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_room_code_edit.text_changed.connect(func(t: String) -> void:
+		var up := t.to_upper()
+		if up != t:
+			_room_code_edit.text = up
+			_room_code_edit.caret_column = up.length())
+	_room_code_edit.text_submitted.connect(func(_t: String) -> void: _on_join_room())
+	r1.add_child(_room_code_edit)
+	_join_btn = UiKit.ghost("加入", 38, 10)
+	_join_btn.custom_minimum_size.x = 68
+	_join_btn.pressed.connect(_on_join_room)
+	r1.add_child(_join_btn)
+
+	var r2 := HBoxContainer.new()
+	r2.add_theme_constant_override("separation", 8)
+	v.add_child(r2)
+	_create_btn = UiKit.ghost("创建房间", 38, 10)
+	_create_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_create_btn.pressed.connect(_on_create_room)
+	r2.add_child(_create_btn)
+
+	var turn_l := UiKit.label("出牌", 10, UiPalette.DIM)
+	turn_l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	r2.add_child(turn_l)
+
+	_turn_opt = UiKit.option(["5 秒", "10 秒", "15 秒", "20 秒", "30 秒", "60 秒"],
+		[5, 10, 15, 20, 30, 60], 3)
+	_turn_opt.custom_minimum_size = Vector2(104, 38)
+	_turn_opt.item_selected.connect(_on_turn_seconds_changed)
+	r2.add_child(_turn_opt)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	v.add_child(head)
+	head.add_child(UiKit.section("公开房间"))
+	head.add_child(UiKit.spacer())
+	var refresh := UiKit.pill("刷新", 50)
+	refresh.custom_minimum_size.y = 24
+	refresh.add_theme_font_size_override("font_size", 10)
+	refresh.pressed.connect(func() -> void:
+		if client.has_identity():
+			client.list_rooms())
+	head.add_child(refresh)
+
+	_room_list = VBoxContainer.new()
+	_room_list.add_theme_constant_override("separation", 7)
+	v.add_child(_wrap_scroll(_room_list))
+	_refresh_rooms([])
 	return v
 
 
-func _build_rooms() -> Control:
-	_room_list = VBoxContainer.new()
-	_room_list.add_theme_constant_override("separation", 4)
-	_refresh_rooms([])
-	return _room_list
-
-
-func _build_friends() -> Control:
+func _build_page_players() -> Control:
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 6)
+	v.add_theme_constant_override("separation", 8)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	v.add_child(head)
+	head.add_child(UiKit.section("在线玩家"))
+	head.add_child(UiKit.spacer())
+	var refresh := UiKit.pill("刷新", 50)
+	refresh.custom_minimum_size.y = 24
+	refresh.add_theme_font_size_override("font_size", 10)
+	refresh.pressed.connect(func() -> void:
+		if client.has_identity():
+			client.list_players())
+	head.add_child(refresh)
+
+	_players_list = VBoxContainer.new()
+	_players_list.add_theme_constant_override("separation", 7)
+	v.add_child(_wrap_scroll(_players_list))
+	_refresh_players([])
+	return v
+
+
+func _build_page_friends() -> Control:
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
 
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 6)
+	row.add_theme_constant_override("separation", 8)
 	v.add_child(row)
-	row.add_child(_lab("名字", 11, UiPalette.DIM))
-	_friend_name_edit = LineEdit.new()
-	_friend_name_edit.placeholder_text = "对方昵称"
+	_friend_name_edit = UiKit.input("输入对方昵称")
 	_friend_name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_friend_name_edit.custom_minimum_size.y = 30
+	_friend_name_edit.text_submitted.connect(func(_t: String) -> void: _on_add_friend())
 	row.add_child(_friend_name_edit)
-	var add := _btn("加好友", _on_add_friend)
+	var add := UiKit.ghost("加好友", 38, 10)
+	add.custom_minimum_size.x = 74
+	add.pressed.connect(_on_add_friend)
 	row.add_child(add)
 
+	v.add_child(UiKit.section("好友"))
+
 	_friend_list = VBoxContainer.new()
-	_friend_list.add_theme_constant_override("separation", 4)
-	v.add_child(_friend_list)
+	_friend_list.add_theme_constant_override("separation", 7)
+	v.add_child(_wrap_scroll(_friend_list))
+	_refresh_friends([])
 	return v
+
+
+func _build_statusbar(col: VBoxContainer) -> void:
+	var pc := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color("#0D1424")
+	sb.border_color = Color("#212B42")
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(10)
+	sb.content_margin_left = 11
+	sb.content_margin_right = 11
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	pc.add_theme_stylebox_override("panel", sb)
+	col.add_child(pc)
+
+	_status_box = VBoxContainer.new()
+	_status_box.add_theme_constant_override("separation", 2)
+	pc.add_child(_status_box)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 7)
+	_status_box.add_child(row)
+	_status_dot = UiKit.dot(UiPalette.DIM, 6)
+	row.add_child(_status_dot)
+	_status = UiKit.label("未连接", 11, UiPalette.DIM)
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(_status)
+
+
+func _build_settings() -> void:
+	var layer := Control.new()
+	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	layer.visible = false
+	add_child(layer)
+	_settings_layer = layer
+
+	# 点空白处收起（用一个透明按钮接点击，比 ColorRect 稳）
+	var scrim := Button.new()
+	scrim.focus_mode = Control.FOCUS_NONE
+	scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var scrim_box := UiKit.flat(Color(0.01, 0.02, 0.05, 0.86))
+	for s in ["normal", "hover", "pressed", "focus"]:
+		scrim.add_theme_stylebox_override(s, scrim_box)
+	scrim.pressed.connect(_close_settings)
+	layer.add_child(scrim)
+
+	var cc := CenterContainer.new()
+	cc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	cc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(cc)
+
+	var card := PanelContainer.new()
+	card.custom_minimum_size = Vector2(400, 0)
+	card.add_theme_stylebox_override("panel",
+		UiKit.card(Color("#141C2E"), 18, Color("#33415F")))
+	cc.add_child(card)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	card.add_child(v)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	v.add_child(head)
+	head.add_child(UiKit.label("连接设置", 15, UiPalette.GOLD))
+	head.add_child(UiKit.spacer())
+	var close := UiKit.pill("关闭", 52)
+	close.custom_minimum_size.y = 24
+	close.pressed.connect(_close_settings)
+	head.add_child(close)
+
+	v.add_child(UiKit.section("昵称"))
+	_name_edit = UiKit.input("给自己起个名字")
+	_name_edit.text = client.player_name
+	_name_edit.text_changed.connect(func(t: String) -> void:
+		client.player_name = t
+		_sync_identity())
+	v.add_child(_name_edit)
+
+	v.add_child(UiKit.section("服务器地址"))
+	var addr := HBoxContainer.new()
+	addr.add_theme_constant_override("separation", 8)
+	v.add_child(addr)
+	_host_edit = UiKit.input("主机名或 IP")
+	_host_edit.text = client.host
+	_host_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	addr.add_child(_host_edit)
+	_port_edit = UiKit.input("端口")
+	_port_edit.text = str(client.port)
+	_port_edit.custom_minimum_size.x = 92
+	addr.add_child(_port_edit)
+
+	var acts := HBoxContainer.new()
+	acts.add_theme_constant_override("separation", 8)
+	v.add_child(acts)
+	var conn := UiKit.primary("连接服务器", 42, 11)
+	conn.add_theme_font_size_override("font_size", 14)
+	conn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	conn.pressed.connect(_on_connect)
+	acts.add_child(conn)
+	var re := UiKit.ghost("重连", 42, 11)
+	re.custom_minimum_size.x = 86
+	re.pressed.connect(_on_reconnect)
+	acts.add_child(re)
+
+	var hint := UiKit.label("同一局的所有人必须连同一台服务器；地址留 127.0.0.1 只能连本机。",
+		10, UiPalette.DIM)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(hint)
+
+
+func _wrap_scroll(inner: Control) -> ScrollContainer:
+	var sc := ScrollContainer.new()
+	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.add_child(inner)
+	return sc
+
+
+# ---------------------------------------------------------------- 页签与设置
+
+func _switch_tab(i: int) -> void:
+	_tab = i
+	for k in _tab_btns.size():
+		UiKit.style_tab(_tab_btns[k], k == i)
+	for k in _pages.size():
+		(_pages[k] as Control).visible = k == i
+
+
+func _open_settings() -> void:
+	_settings_layer.visible = true
+	_settings_layer.move_to_front()
+	if _name_edit != null and _name_edit.text.strip_edges() == "":
+		_name_edit.grab_focus()
+
+
+func _close_settings() -> void:
+	_settings_layer.visible = false
+
+
+## 身份卡跟随连接状态与昵称刷新
+func _sync_identity() -> void:
+	var nm := client.player_name.strip_edges()
+	if nm == "":
+		nm = "未命名玩家"
+	_hero_name.text = nm
+	_avatar_letter.text = nm.substr(0, 1)
+	var on := _connected
+	_conn_label.text = "已连接服务器" if on else "未连接服务器"
+	(_conn_dot.get_theme_stylebox("panel") as StyleBoxFlat).bg_color = \
+		UiPalette.TEAL if on else UiPalette.DIM
+	_rating_label.text = ("评分 %d" % _my_mmr) if _my_mmr > 0 else "评分 —"
 
 
 # ---------------------------------------------------------------- 操作
@@ -288,12 +590,18 @@ func _on_connect() -> void:
 	if _disabled:
 		_set_status("上次连接发现版本不一致，请先让服务器更新", UiPalette.RED)
 		return
-	client.set_server(_host_edit.text, int(_port_edit.text))
+	var port := int(_port_edit.text.strip_edges())
+	if port <= 0 or port > 65535:
+		_set_status("端口不对：填 1~65535 之间的数字", UiPalette.RED)
+		return
+	client.set_server(_host_edit.text.strip_edges(), port)
 	var nm := _name_edit.text.strip_edges()
 	if nm == "":
 		nm = "玩家" + str(randi() % 900 + 100)
 		_name_edit.text = nm
 	client.player_name = nm
+	_sync_identity()
+	_close_settings()
 	if client.has_identity():
 		client.login()
 	else:
@@ -301,7 +609,9 @@ func _on_connect() -> void:
 
 
 func _on_reconnect() -> void:
-	client.set_server(_host_edit.text, int(_port_edit.text))
+	var port := int(_port_edit.text.strip_edges())
+	if port > 0 and port <= 65535:
+		client.set_server(_host_edit.text.strip_edges(), port)
 	if client.has_identity():
 		client.login()
 	else:
@@ -313,6 +623,10 @@ func _on_matchmake() -> void:
 		client.cancel_match()
 		_queued = false
 		_match_btn.text = "快速匹配"
+		return
+	if not client.has_identity():
+		_set_status("先点右上角「服务器」连上服务器", UiPalette.RED)
+		_open_settings()
 		return
 	client.matchmake()
 	_queued = true
@@ -335,6 +649,8 @@ func _on_join_room() -> void:
 func _on_turn_seconds_changed(_idx: int) -> void:
 	# 房主改出牌时间：先记下来，点了「开始」才生效
 	_turn_seconds = float(_turn_opt.get_item_id(_turn_opt.get_selected_id()))
+	if _room_id != "" and _room_time_label != null:
+		_room_time_text.text = "出牌 %d 秒" % int(_turn_seconds)
 
 
 func _on_start_room() -> void:
@@ -361,15 +677,12 @@ func _on_add_friend() -> void:
 
 
 func _on_invite() -> void:
-	# 邀请：把当前选中的好友拉进当前房间
+	# 房间条上的「邀请好友」：跳到好友页，让玩家挑人
 	if _room_id == "":
 		_set_status("先创建或加入一个房间", UiPalette.RED)
 		return
-	if _pending_friend_invite == "":
-		_set_status("先在好友列表里点一个「邀请」", UiPalette.RED)
-		return
-	client.invite_friend(_pending_friend_invite, _room_id)
-	_set_status("已发出邀请", UiPalette.TEAL)
+	_switch_tab(TAB_FRIENDS)
+	_set_status("在好友右侧点「邀请」，把人拉进房间 " + _room_id, UiPalette.GOLD)
 
 
 # ---------------------------------------------------------------- 回调
@@ -381,10 +694,15 @@ func _on_cmd_result(cmd: String, res: Dictionary) -> void:
 		return
 	match cmd:
 		"register", "login":
+			_connected = true
 			_set_status("已连接 · 你是 " + client.player_name, UiPalette.TEAL)
 			client.start_polling()
 			client.api("online", {})
 			client.api("friends", {})
+			client.api("profile", {})
+			# 名单列表下一拍就刷，别让玩家先盯 3 秒空列表
+			_roster_timer = 3.0
+			_sync_identity()
 		"create_room":
 			_room_id = str(res.get("room_id", ""))
 			_host_id = client.player_id
@@ -417,6 +735,7 @@ func _on_cmd_result(cmd: String, res: Dictionary) -> void:
 			_refresh_players(res.get("players", []))
 		"profile":
 			_my_mmr = int(res.get("mmr", 0))
+			_sync_identity()
 		"add_friend":
 			_friend_name_edit.text = ""
 			client.api("friends", {})
@@ -470,17 +789,16 @@ func _on_event(evt: Dictionary) -> void:
 			_match_info.visible = false
 
 
-## 显示当前房间信息（房号、成员、房主、出牌时间）
+## 显示房间条（房号、成员、房主、出牌时间）
 func _show_room() -> void:
 	if _room_id == "":
 		_room_panel.visible = false
 		return
 	_room_panel.visible = true
 	var is_host := _host_id == client.player_id or _host_id == ""
-	_room_info.text = "房间 %s · 出牌 %d 秒\n%s" % [
-		_room_id, int(_turn_seconds),
-		"你是房主，可以点「开始这一局」" if is_host else "等房主开始这一局",
-	]
+	_room_code_label.text = "房间 " + _room_id
+	_room_time_text.text = "出牌 %d 秒" % int(_turn_seconds)
+	_room_info.text = "你是房主，人齐了点「开始这一局」" if is_host else "等房主开始这一局"
 	_start_btn.visible = is_host
 	_turn_opt.disabled = not is_host
 	_refresh_room_members(is_host)
@@ -496,19 +814,21 @@ func _refresh_room_members(is_host: bool) -> void:
 			continue
 		var mid := str(m.get("id", ""))
 		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 6)
+		row.add_theme_constant_override("separation", 7)
 		_room_members.add_child(row)
+		var me := mid == client.player_id
+		row.add_child(UiKit.dot(UiPalette.GOLD if me else UiPalette.TEAL, 5))
 		var nm := str(m.get("name", "?"))
-		if mid == client.player_id:
+		if me:
 			nm += "（你）"
-		var l := _lab(nm, 11, UiPalette.TEXT)
+		var l := UiKit.label(nm, 12, UiPalette.TEXT)
 		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(l)
 		if is_host and mid != client.player_id:
-			var rm := _btn("移除", func() -> void:
+			var rm := UiKit.pill("移除", 50)
+			rm.pressed.connect(func() -> void:
 				client.remove_member(_room_id, mid)
 				_set_status("已把 " + str(m.get("name", "")) + " 请出房间", UiPalette.GOLD))
-			rm.custom_minimum_size = Vector2(52, 24)
 			row.add_child(rm)
 
 
@@ -516,7 +836,7 @@ func _update_match_info(status: Dictionary) -> void:
 	if status.is_empty():
 		return
 	_match_info.visible = true
-	_match_info.text = "匹配中 · 已等待 %.0f 秒 · 评分 %d · 当前范围 ±%d" % [
+	_match_info.text = "匹配中 · 已等 %.0f 秒 · 评分 %d · 范围 ±%d" % [
 		float(status.get("waited", 0.0)),
 		int(status.get("mmr", _my_mmr)),
 		int(status.get("window", 0.0)),
@@ -528,7 +848,9 @@ func _refresh_players(players: Array) -> void:
 		_players_list.remove_child(c)
 		c.queue_free()
 	if players.is_empty():
-		_players_list.add_child(_lab("（还没有别人在线）", 11, UiPalette.DIM))
+		_players_list.add_child(_vfill())
+		_players_list.add_child(_empty("（还没有别人在线）"))
+		_players_list.add_child(_vfill())
 		return
 	for p in players:
 		if not (p is Dictionary):
@@ -544,21 +866,31 @@ func _refresh_players(players: Array) -> void:
 				color = UiPalette.TEXT
 			"in_game", "in_game_ai":
 				color = UiPalette.RED
+
+		var card := UiKit.row_card()
 		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 6)
-		_players_list.add_child(row)
-		var l := _lab("%s %s" % [str(p.get("name", "?")), str(p.get("label", ""))],
-			11, color)
-		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(l)
+		row.add_theme_constant_override("separation", 9)
+		card.add_child(row)
+		row.add_child(UiKit.dot(color, 7))
+
+		var who := VBoxContainer.new()
+		who.add_theme_constant_override("separation", 1)
+		who.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		who.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(who)
+		who.add_child(UiKit.label(str(p.get("name", "?")), 13, UiPalette.TEXT))
+		who.add_child(UiKit.label(str(p.get("label", "空闲")), 10, color))
+
 		# 在房间里的人可以点「加入」直接进他的房间
 		var rid := str(p.get("room_id", ""))
 		if rid != "" and st == "in_lobby":
-			var join := _btn("加入", func() -> void:
+			var join := UiKit.pill("加入", 54)
+			join.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			join.pressed.connect(func() -> void:
 				client.join_room(rid)
 				_set_status("正在加入房间 " + rid, UiPalette.GOLD))
-			join.custom_minimum_size = Vector2(52, 24)
 			row.add_child(join)
+		_players_list.add_child(card)
 
 
 func _process(delta: float) -> void:
@@ -571,7 +903,11 @@ func _process(delta: float) -> void:
 		return
 	if _queued:
 		client.match_status()
-	if int(_refresh_timer * 10) % 30 == 0:
+	# 名单 3 秒一轮。以前这里写的是 int(_refresh_timer * 10) % 30，
+	# 但 _refresh_timer 上一行就被清零了，条件永远成立 —— 实际每秒都在拉。
+	_roster_timer += 1.0
+	if _roster_timer >= 3.0:
+		_roster_timer = 0.0
 		client.list_players()
 		client.list_friends()
 
@@ -618,12 +954,13 @@ func _on_online_count(c: int) -> void:
 # ---------------------------------------------------------------- 刷新
 
 func _refresh_status() -> void:
-	_online_label.text = "在线 ?"
+	_online_label.text = "在线 —"
+	_sync_identity()
 	if client.has_identity():
 		_set_status("已有存档，正在重连…", UiPalette.DIM)
 		_on_reconnect()
 	else:
-		_set_status("填好昵称和地址，点「连接服务器」", UiPalette.DIM)
+		_set_status("点右上角「服务器」填昵称和地址，再连接", UiPalette.DIM)
 
 
 func _refresh_rooms(rooms: Array) -> void:
@@ -631,25 +968,39 @@ func _refresh_rooms(rooms: Array) -> void:
 		_room_list.remove_child(c)
 		c.queue_free()
 	if rooms.is_empty():
-		_room_list.add_child(_lab("（暂无公开房间）", 11, UiPalette.DIM))
+		_room_list.add_child(_vfill())
+		_room_list.add_child(_empty("（暂无公开房间，上面点「创建房间」等人来）"))
+		_room_list.add_child(_vfill())
 		return
 	for r in rooms:
 		if not (r is Dictionary):
 			continue
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 6)
 		var code := str(r.get("room_id", ""))
 		var names: Array = r.get("players", [])
-		var label := "%s   房主 %s" % [code, str(r.get("owner", "?"))]
-		if not names.is_empty():
-			label += "   %s" % ", ".join(PackedStringArray(names))
-		var l := _lab(label, 11, UiPalette.TEXT)
-		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(l)
-		var j := _btn("加入", func() -> void: client.join_room(code))
-		j.custom_minimum_size = Vector2(56, 26)
+		var card := UiKit.row_card()
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 9)
+		card.add_child(row)
+
+		var info := VBoxContainer.new()
+		info.add_theme_constant_override("separation", 1)
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(info)
+		info.add_child(UiKit.label(code, 15, UiPalette.TEXT))
+
+		var sub := "%d/2 人 · %s" % [names.size(), ", ".join(PackedStringArray(names))]
+		if names.is_empty():
+			sub = "房主 %s" % str(r.get("owner", "?"))
+		var sub_l := UiKit.label(sub, 10, UiPalette.DIM)
+		sub_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_child(sub_l)
+
+		var j := UiKit.pill("加入", 54)
+		j.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		j.pressed.connect(func() -> void: client.join_room(code))
 		row.add_child(j)
-		_room_list.add_child(row)
+		_room_list.add_child(card)
 
 
 func _refresh_friends(friends: Array) -> void:
@@ -657,33 +1008,79 @@ func _refresh_friends(friends: Array) -> void:
 		_friend_list.remove_child(c)
 		c.queue_free()
 	if friends.is_empty():
-		_friend_list.add_child(_lab("（还没有好友）", 11, UiPalette.DIM))
+		_friend_list.add_child(_vfill())
+		_friend_list.add_child(_empty("（还没有好友，在上面输入昵称加一个）"))
+		_friend_list.add_child(_vfill())
 		return
 	for f in friends:
 		if not (f is Dictionary):
 			continue
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 6)
 		var on := bool(f.get("online", false))
-		var st := str(f.get("state", "idle"))
-		var dot := "●" if on else "○"
 		var color := UiPalette.TEAL if on else UiPalette.DIM
-		var tail := " · " + str(f.get("label", "")) if on else ""
-		var l := _lab("%s %s%s" % [dot, str(f.get("name", "?")), tail], 11, color)
-		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(l)
+		var card := UiKit.row_card()
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 9)
+		card.add_child(row)
+		row.add_child(UiKit.dot(color, 7))
+
+		var who := VBoxContainer.new()
+		who.add_theme_constant_override("separation", 1)
+		who.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		who.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(who)
+		who.add_child(UiKit.label(str(f.get("name", "?")), 13, UiPalette.TEXT))
+		var tail := str(f.get("label", "")) if on else "离线"
+		who.add_child(UiKit.label(tail, 10, color))
+
 		var fid := str(f.get("id", ""))
-		var inv := _btn("邀请", func() -> void:
-			_pending_friend_invite = fid
-			_set_status("已选中 " + str(f.get("name", "")) + "，点上面「邀请好友进本房间」", UiPalette.GOLD))
-		inv.custom_minimum_size = Vector2(56, 26)
+		var fname := str(f.get("name", ""))
+		var inv := UiKit.pill("邀请", 54)
+		inv.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		inv.disabled = not on
+		inv.pressed.connect(func() -> void: _invite_one(fid, fname))
 		row.add_child(inv)
-		_friend_list.add_child(row)
+		_friend_list.add_child(card)
+
+
+## 把某个好友拉进当前房间；还没进房间就先记下来，等开好房再点。
+func _invite_one(fid: String, fname: String) -> void:
+	_pending_friend_invite = fid
+	if _room_id == "":
+		_set_status("还没进房间：先在上面建一个房，再点「邀请」", UiPalette.GOLD)
+		_switch_tab(TAB_ROOMS)
+		return
+	client.invite_friend(fid, _room_id)
+	_set_status("已邀请 %s 进房间 %s" % [fname, _room_id], UiPalette.TEAL)
+
+
+## 上下拉扯用的空占位：列表为空时把空态卡放在正中间。
+func _vfill() -> Control:
+	var c := Control.new()
+	c.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return c
+
+
+func _empty(text: String) -> Control:
+	var pc := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1, 1, 1, 0.02)
+	sb.border_color = Color(1, 1, 1, 0.06)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(12)
+	sb.set_content_margin_all(18)
+	pc.add_theme_stylebox_override("panel", sb)
+	var l := UiKit.label(text, 11, UiPalette.DIM)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pc.add_child(l)
+	return pc
 
 
 func _set_status(text: String, color: Color) -> void:
 	_status.text = text
 	_status.add_theme_color_override("font_color", color)
+	if _status_dot != null:
+		(_status_dot.get_theme_stylebox("panel") as StyleBoxFlat).bg_color = color
 
 
 # ---------------------------------------------------------------- 进入对战
@@ -706,23 +1103,3 @@ func _enter_battle() -> void:
 	# 否则进了对战界面就是「连着但收不到任何消息」。
 	SceneRouter.swap(get_tree(), battle, [client])
 	battle.call("setup_online", ctrl)
-
-
-# ---------------------------------------------------------------- 小工具
-
-func _lab(t: String, size: int, c: Color) -> Label:
-	var l := Label.new()
-	l.text = t
-	l.add_theme_font_size_override("font_size", size)
-	l.add_theme_color_override("font_color", c)
-	return l
-
-
-func _btn(t: String, cb: Callable) -> Button:
-	var b := Button.new()
-	b.text = t
-	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size.y = 30
-	b.add_theme_font_size_override("font_size", 12)
-	b.pressed.connect(cb)
-	return b
