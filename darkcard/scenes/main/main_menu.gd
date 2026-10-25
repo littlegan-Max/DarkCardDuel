@@ -2,7 +2,8 @@ extends Control
 
 # 主菜单：选单机还是联机。
 #
-# 联机需要先在大厅里连上服务器，所以主菜单只放两个入口。
+# 版面：抬头 + 标题 + 三个特征胶囊 + 两个入口卡（联机为金底主操作），
+# 底部一行版本号。联机需要先在大厅里连上服务器，所以这里只放两个入口。
 
 const LOBBY_SCENE := "res://scenes/lobby/Lobby.tscn"
 const BATTLE_SCENE := "res://scenes/Battle.tscn"
@@ -15,12 +16,7 @@ func _ready() -> void:
 
 
 func _build_ui() -> void:
-	var bg := TextureRect.new()
-	bg.texture = UiPalette.gradient(UiPalette.BG_TOP, UiPalette.BG_BOTTOM)
-	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	bg.stretch_mode = TextureRect.STRETCH_SCALE
-	add_child(bg)
-	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	UiKit.backdrop(self)
 
 	var cc := CenterContainer.new()
 	add_child(cc)
@@ -28,36 +24,151 @@ func _build_ui() -> void:
 
 	var v := VBoxContainer.new()
 	v.alignment = BoxContainer.ALIGNMENT_CENTER
-	v.add_theme_constant_override("separation", 14)
-	v.custom_minimum_size = Vector2(300, 0)
+	v.add_theme_constant_override("separation", 0)
+	v.custom_minimum_size = Vector2(340, 0)
 	cc.add_child(v)
 
-	var title := Label.new()
-	title.text = "暗牌技能对战"
+	v.add_child(_emblem())
+
+	var gap0 := Control.new()
+	gap0.custom_minimum_size.y = 14
+	v.add_child(gap0)
+
+	v.add_child(UiKit.kicker("DARK CARD DUEL", UiPalette.GOLD_DEEP))
+
+	var title := UiKit.label("暗牌技能对战", 36, UiPalette.GOLD)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 32)
-	title.add_theme_color_override("font_color", UiPalette.GOLD)
+	title.add_theme_constant_override("line_spacing", 0)
 	v.add_child(title)
 
-	var sub := Label.new()
-	sub.text = "读心 · 1v1 同时翻牌"
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	sub.add_theme_font_size_override("font_size", 13)
-	sub.add_theme_color_override("font_color", UiPalette.DIM)
-	v.add_child(sub)
+	var chips := HBoxContainer.new()
+	chips.alignment = BoxContainer.ALIGNMENT_CENTER
+	chips.add_theme_constant_override("separation", 7)
+	v.add_child(chips)
+	for t in ["读心", "1v1", "同时翻牌"]:
+		chips.add_child(UiKit.chip(t, UiPalette.DIM))
 
-	var local_btn := _big_btn("单机对战", "对着 AI 打一局", func() -> void: _go(BATTLE_SCENE))
-	v.add_child(local_btn)
+	var gap1 := Control.new()
+	gap1.custom_minimum_size.y = 40
+	v.add_child(gap1)
 
-	var online_btn := _big_btn("联机对战", "匹配 / 开房间 / 好友", func() -> void: _go(LOBBY_SCENE))
-	v.add_child(online_btn)
+	var online := _entry("联机对战", "匹配 · 开房间 · 好友", true,
+		func() -> void: _go(LOBBY_SCENE))
+	v.add_child(online)
 
-	_status = Label.new()
-	_status.text = ""
+	var gap2 := Control.new()
+	gap2.custom_minimum_size.y = 12
+	v.add_child(gap2)
+
+	var local := _entry("单机对战", "对着 AI 打一局", false,
+		func() -> void: _go(BATTLE_SCENE))
+	v.add_child(local)
+
+	var gap3 := Control.new()
+	gap3.custom_minimum_size.y = 26
+	v.add_child(gap3)
+
+	_status = UiKit.label("", 11, UiPalette.DIM)
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_status.add_theme_font_size_override("font_size", 11)
-	_status.add_theme_color_override("font_color", UiPalette.DIM)
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_status)
+
+	# 版本号钉在屏幕底部
+	var ver := UiKit.label("v" + str(ProjectSettings.get_setting(
+		"application/config/version", "")), 10, UiPalette.DIM)
+	ver.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	add_child(ver)
+	ver.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	ver.offset_top = -34
+	ver.offset_bottom = -16
+
+
+## 标识：两张扣着的牌夹一个「VS」，一眼看出是同时翻牌的 1v1。
+func _emblem() -> Control:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+
+	row.add_child(_card_back(-13.0))
+	var vs := UiKit.label("VS", 11, UiPalette.GOLD_DEEP)
+	vs.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(vs)
+	row.add_child(_card_back(13.0))
+	return row
+
+
+func _card_back(tilt: float) -> Panel:
+	var c := Panel.new()
+	c.custom_minimum_size = Vector2(40, 56)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color("#141C2E")
+	sb.border_color = Color(UiPalette.GOLD.r, UiPalette.GOLD.g, UiPalette.GOLD.b, 0.55)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(6)
+	c.add_theme_stylebox_override("panel", sb)
+
+	# 内嵌一圈细线，读起来像牌背的花纹，而不是一个空框
+	var inner := Panel.new()
+	inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	inner.position = Vector2(5, 5)
+	inner.size = Vector2(30, 46)
+	var ib := StyleBoxFlat.new()
+	ib.bg_color = Color(0, 0, 0, 0)
+	ib.border_color = Color(UiPalette.GOLD.r, UiPalette.GOLD.g, UiPalette.GOLD.b, 0.22)
+	ib.set_border_width_all(1)
+	ib.set_corner_radius_all(4)
+	inner.add_theme_stylebox_override("panel", ib)
+	c.add_child(inner)
+
+	# 中间一枚小菱形，像牌背的花纹
+	var pip := Panel.new()
+	pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pip.size = Vector2(9, 9)
+	var pb := StyleBoxFlat.new()
+	pb.bg_color = Color(UiPalette.GOLD.r, UiPalette.GOLD.g, UiPalette.GOLD.b, 0.5)
+	pb.set_corner_radius_all(1)
+	pip.add_theme_stylebox_override("panel", pb)
+	c.add_child(pip)
+	pip.pivot_offset = pip.size / 2.0
+	pip.rotation = deg_to_rad(45.0)
+	pip.position = (c.custom_minimum_size - pip.size) / 2.0
+
+	c.pivot_offset = c.custom_minimum_size / 2.0
+	c.rotation = deg_to_rad(tilt)
+	return c
+
+
+## 一个入口卡：标题 + 一行说明。金底是主入口，描边是次入口。
+## 说明文字用子 Label 叠在按钮里，Button.text 只留标题（有测试按文本找按钮）。
+func _entry(title: String, desc: String, primary: bool, cb: Callable) -> Button:
+	var b: Button
+	if primary:
+		b = UiKit.primary(title, 74, 16)
+	else:
+		b = UiKit.ghost(title, 74, 16)
+
+	b.custom_minimum_size = Vector2(340, 74)
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.add_theme_font_size_override("font_size", 19)
+
+	# 顶到上半区，把下半区留给说明文字
+	for s in ["normal", "hover", "pressed", "disabled"]:
+		if b.has_theme_stylebox_override(s):
+			var sb: StyleBoxFlat = (b.get_theme_stylebox(s) as StyleBoxFlat).duplicate()
+			sb.content_margin_left = 20
+			sb.content_margin_right = 20
+			sb.content_margin_top = 9
+			sb.content_margin_bottom = 25
+			b.add_theme_stylebox_override(s, sb)
+
+	var sub := UiKit.label(desc, 11, Color("#2A2013") if primary else UiPalette.DIM)
+	sub.position = Vector2(21, 45)
+	sub.size = Vector2(290, 16)
+	sub.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	b.add_child(sub)
+
+	b.pressed.connect(cb)
+	return b
 
 
 func _go(path: String) -> void:
@@ -69,13 +180,3 @@ func _go(path: String) -> void:
 	# 直接 add_child 到自己身上会跟着本节点一起被释放（黑屏）。
 	var next: Control = load(path).instantiate()
 	SceneRouter.swap(get_tree(), next)
-
-
-func _big_btn(t: String, sub: String, cb: Callable) -> Button:
-	var b := Button.new()
-	b.text = t
-	b.custom_minimum_size = Vector2(280, 56)
-	b.focus_mode = Control.FOCUS_NONE
-	b.add_theme_font_size_override("font_size", 17)
-	b.pressed.connect(cb)
-	return b
