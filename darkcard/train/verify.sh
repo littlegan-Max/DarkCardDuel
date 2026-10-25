@@ -33,6 +33,7 @@ run "生成对拍用例" python "$PROJ/train/export_parity.py" "$CASES"
 run "双引擎对拍" "$GODOT" --headless --path "$PROJ" --script res://tools/parity_check.gd
 run "不变量扫描" python "$PROJ/train/invariants.py" 800
 run "联机服务器自测" python "$PROJ/server/test_server.py"
+run "自动更新专项（4 类更新形式）" python "$PROJ/server/test_update.py"
 run "联机端到端（双客户端）" python "$PROJ/tools/run_online_test.py"
 run "打包服务器（发给对方的 zip）" python "$PROJ/tools/pack_server.py"
 

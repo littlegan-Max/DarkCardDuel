@@ -37,6 +37,8 @@ func _initialize() -> void:
 	root.add_child(client)
 	client.set_server("127.0.0.1", port)
 	client.rules_version = db.rules_version
+	client.local_game_version = str(ProjectSettings.get_setting(
+		"application/config/version", ""))
 	client.command_result.connect(_on_cmd)
 	client.event_received.connect(_on_event)
 

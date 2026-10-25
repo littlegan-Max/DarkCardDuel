@@ -31,6 +31,7 @@ FILES = [
     (os.path.join(PROJ, "train", "engine.py"), "engine.py"),
     (os.path.join(PROJ, "data", "cards.json"), "cards.json"),
     (os.path.join(PROJ, "server", "update.sh"), "update.sh"),
+    (os.path.join(PROJ, "server", "requirements.txt"), "requirements.txt"),
 ]
 
 README = """暗牌技能对战 · 联机服务器
@@ -71,18 +72,23 @@ README = """暗牌技能对战 · 联机服务器
 以后更新了怎么办
 ----------------
 不用再找我们发文件。服务器默认开着自动更新：
-每 10 分钟查一次 GitHub Releases，有新版就自动下载并热重载生效。
+每 10 分钟查一次 GitHub Releases，有新版就自动下载并生效。
 
-热重载 = 不重启进程、不打断任何对局。
-正在打的那一局按旧规则打完，之后新开的局用新规则。
-（老客户端会被版本握手挡住，提示需要更新。）
+服务器按改动内容分三层处理：
+  规则层（engine.py / cards.json）→ 热重载，不重启进程，不打断任何对局。
+                                    正在打的那一局按旧规则打完，新开的局用新规则。
+  进程层（server.py / 新增模块）   → 等没人打牌时重启进程（PID 不变，systemd 无感）。
+  依赖层（requirements.txt）       → 自动 pip install。
 
 想手动触发：
 
     bash update.sh          # 更新到最新版
     bash update.sh --check  # 只看有没有新版
 
-服务器连不上 GitHub 时，用 --url <直链> 指定下载地址。
+服务器连不上 GitHub 时，用 --url <直链> 指定下载地址，
+或设环境变量 DARKCARD_UPDATE_URL 指向自己的镜像。
+
+注意：游戏客户端（APK/EXE）不在自动更新范围内，需要我们重新发一份。
 
 数据
 ----

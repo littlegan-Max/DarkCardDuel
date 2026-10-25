@@ -21,6 +21,7 @@ signal online_count_changed(count: int)
 signal rooms_changed(rooms: Array)
 signal version_error(message: String)
 signal server_updated(rules_version: String)
+signal client_update_available(server_version: String)
 
 const DEFAULT_HOST := "127.0.0.1"
 const DEFAULT_PORT := 8737
@@ -31,6 +32,7 @@ const PROTOCOL_VERSION := 1
 var host := DEFAULT_HOST
 var port := DEFAULT_PORT
 var rules_version := ""      # 本地卡表的规则版本
+var local_game_version := ""  # 本地客户端版本（跟服务器比，提示该不该更新）
 var token := ""
 var player_id := ""
 var player_name := ""
@@ -221,6 +223,12 @@ func _check_version(res: Dictionary) -> void:
 		version_mismatch = "规则版本不匹配（服务器 %s，本地 %s），服务器需要更新" % [
 			srv_rules, rules_version]
 		emit_signal("version_error", version_mismatch)
+		return
+	# 规则一致但游戏版本不同：服务器端更新了，客户端这份还旧着。
+	# 服务器端是自动更新的，客户端这边得重新发包——提示玩家一下。
+	var srv_game := str(res.get("game_version", ""))
+	if srv_game != "" and local_game_version != "" and srv_game != local_game_version:
+		emit_signal("client_update_available", srv_game)
 
 
 func api(cmd: String, extra: Dictionary = {}) -> void:

@@ -123,6 +123,15 @@ NEW_GAME="$(cur_game)"
 NEW_RULES="$(cur_rules)"
 echo "更新完成：游戏 $CUR_GAME → $NEW_GAME / 规则 $CUR_RULES → $NEW_RULES"
 
+# ---------- 依赖 ----------
+# 服务器本来只用标准库，requirements.txt 通常是空的。
+# 以后真引了第三方库，这里会先装上，避免「代码更新了但 import 失败」。
+if [ -f requirements.txt ] && grep -qvE '^\s*(#|$)' requirements.txt 2>/dev/null; then
+    echo "安装依赖…"
+    python3 -m pip install -r requirements.txt || \
+        echo "依赖安装失败，可能服务器没有 pip 或没有外网（不影响已装好的旧版本继续跑）"
+fi
+
 # ---------- 热重载（不重启） ----------
 # 服务器支持热重载：新规则对正在进行的对局不生效（那局按旧规则打完），
 # 新开的局才用新规则。所以不需要重启，不会打断任何对局。

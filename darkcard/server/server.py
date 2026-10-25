@@ -374,6 +374,10 @@ class Hub:
         # 不一致说明服务器上的卡表是旧版（改了规则但服务器没更新），
         # 这时两边会用不同规则结算同一手牌，必须挡住。
         self.rules_version = str(getattr(self.db, "version", ""))
+        # 游戏版本：客户端拿它跟自己的版本比对，
+        # 不一致说明服务器上跑的是新版本，客户端该更新了
+        #（服务器端的更新是自动的，客户端这边的 APK/EXE 还得手动发）
+        self.game_version = _local_game_version()
 
     # ---- 在线人数 ----
     def online_count(self) -> int:
@@ -640,6 +644,7 @@ class Api:
             "ok": True, "token": p["token"], "player_id": p["id"], "name": name,
             "protocol_version": PROTOCOL_VERSION,
             "rules_version": self.hub.rules_version,
+            "game_version": self.hub.game_version,
         }
 
     def cmd_login(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -653,6 +658,7 @@ class Api:
             "online_count": self.hub.online_count(),
             "protocol_version": PROTOCOL_VERSION,
             "rules_version": self.hub.rules_version,
+            "game_version": self.hub.game_version,
         }
 
     def cmd_rename(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -928,6 +934,26 @@ class Watchdog(threading.Thread):
 
 UPDATE_REPO = "littlegan-Max/DarkCardDuel"
 
+# 自动更新的文件分类（决定是热重载还是要重启进程）
+# 规则层：改这些只需热重载，不打断任何对局
+RULE_FILES = ("engine.py", "cards.json")
+# 元信息：改这些不影响运行，不用重启
+META_FILES = ("版本.txt", "使用说明.txt", "update.sh")
+# 永不覆盖：玩家数据
+PRESERVE_FILES = ("store.json",)
+
+
+def _update_url() -> str:
+    """更新包下载地址。
+
+    默认从 GitHub Releases 拿最新版；可以用环境变量 DARKCARD_UPDATE_URL 覆盖
+    （自建镜像、服务器连不上 GitHub、或做自动化测试时用）。
+    """
+    return os.environ.get(
+        "DARKCARD_UPDATE_URL",
+        "https://github.com/%s/releases/latest/download/darkcard-server.zip" % UPDATE_REPO,
+    )
+
 
 def check_remote_version(timeout: float = 8.0) -> str:
     """查 GitHub 上有没有比本地新的服务器包。
@@ -937,6 +963,9 @@ def check_remote_version(timeout: float = 8.0) -> str:
     """
     import urllib.request
 
+    forced = os.environ.get("DARKCARD_UPDATE_TAG", "").strip()
+    if forced:
+        return forced
     url = "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "darkcard-server"})
@@ -986,95 +1015,202 @@ class AutoUpdater(threading.Thread):
     CHECK_INTERVAL = 600.0      # 10 分钟查一次
     IDLE_WAIT_MAX = 1800.0      # 最多等 30 分钟有人打完
 
+    @staticmethod
+    def _interval() -> float:
+        """检查间隔，可用环境变量调短（自动化测试用）。"""
+        try:
+            v = float(os.environ.get("DARKCARD_UPDATE_INTERVAL", ""))
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+        return AutoUpdater.CHECK_INTERVAL
+
     def __init__(self, hub: "Hub"):
         super().__init__(daemon=True)
         self.hub = hub
         self._stop = threading.Event()
-        self._pending = False      # 已经下载好、等着重启
+        # 待办：这次更新分别要做什么
+        #   rule   = 规则层变了（engine.py / cards.json）→ 热重载即可
+        #   runtime= 进程层变了（server.py / 新增模块）→ 必须重启进程
+        #   deps   = 依赖变了（requirements.txt）→ 装依赖
+        self._pending = {"rule": False, "runtime": False, "deps": False}
 
     def stop(self) -> None:
         self._stop.set()
 
     def run(self) -> None:
-        # 启动后先等一会儿，别和服务器抢启动
-        if self._stop.wait(60.0):
+        # 启动后先等一会儿，别和服务器抢启动。
+        # 间隔被调短时（测试）也跟着缩短，不然要干等一分钟。
+        if self._stop.wait(min(60.0, self._interval())):
             return
         while not self._stop.is_set():
             try:
                 self._tick()
             except Exception as exc:  # noqa: BLE001 - 更新失败绝不能影响服务器
                 print("[darkcard] 自动更新出错（不影响服务）：%s" % exc, flush=True)
-            self._stop.wait(self.CHECK_INTERVAL)
+            self._stop.wait(self._interval())
 
     def _tick(self) -> None:
-        if not self._pending:
+        # 还没下载过：先查有没有新版
+        if not any(self._pending.values()):
             tag = check_remote_version()
             if not tag:
                 return
             print("[darkcard] 发现新版本 %s，开始下载…" % tag, flush=True)
-            if not self._download_and_stage():
+            changed = self._download_and_stage()
+            if changed is None:
                 return
-            self._pending = True
-
-        # 首选：热重载。不重启、不打断任何对局。
-        ok, err = self.hub.hot_reload()
-        if ok:
-            self.hub.notify_server_updated()
-            self._pending = False
-            print("[darkcard] 新版本已生效（热重载，未重启）", flush=True)
-            return
-
-        # 热重载失败（新代码有问题）：退回「等空闲后重启」
-        print("[darkcard] 热重载失败：%s" % err, flush=True)
-        print("[darkcard] 改为等没人打牌时重启应用新版本", flush=True)
-        waited = 0.0
-        while waited < self.IDLE_WAIT_MAX and not self._stop.is_set():
-            if not self.hub.has_active_match():
-                print("[darkcard] 正在重启以应用新版本…", flush=True)
-                self._exec_restart()
+            self._pending["rule"] = changed["rule"]
+            self._pending["runtime"] = changed["runtime"]
+            self._pending["deps"] = changed["deps"]
+            if not any(self._pending.values()):
+                print("[darkcard] 已是最新，无需变更", flush=True)
                 return
-            self._stop.wait(10.0)
-            waited += 10.0
-        if self._pending:
+
+        # 1) 依赖：装不上就下轮再试（不阻塞其他步骤）
+        if self._pending["deps"]:
+            self._pending["deps"] = not self._install_deps()
+
+        # 2) 规则层（engine.py / cards.json）：热重载，不重启、不打断对局
+        if self._pending["rule"]:
+            ok, err = self.hub.hot_reload()
+            if ok:
+                self.hub.notify_server_updated()
+                self._pending["rule"] = False
+                print("[darkcard] 新规则已生效（热重载，未重启）", flush=True)
+            else:
+                print("[darkcard] 热重载失败：%s" % err, flush=True)
+
+        # 3) 进程层（server.py / 新增模块）：必须重启进程才会生效。
+        #    Python 不能热替换自己的模块，所以这里等没人打牌时 execv 自己。
+        if self._pending["runtime"]:
+            print("[darkcard] 服务器程序有改动，等没人打牌时重启以生效", flush=True)
+            waited = 0.0
+            while waited < self.IDLE_WAIT_MAX and not self._stop.is_set():
+                if not self.hub.has_active_match():
+                    print("[darkcard] 正在重启以应用新版本…", flush=True)
+                    self._exec_restart()
+                    return
+                self._stop.wait(10.0)
+                waited += 10.0
             print("[darkcard] 等了太久还没空闲，本次不重启（下个周期再来）", flush=True)
 
-    def _download_and_stage(self) -> bool:
-        """下载并解压到当前目录。返回是否成功。"""
+    def _download_and_stage(self) -> dict[str, bool] | None:
+        """下载新版本并解压到当前目录。
+
+        返回 {"rule": bool, "runtime": bool, "deps": bool}，
+        说明这次更新分别动了「规则层」「进程层」「依赖」，
+        调用方据此决定是热重载还是要重启进程。
+
+        解压用**黑名单**而不是白名单：除了明确要保留的东西
+        （玩家数据 store.json、日志、临时文件），包里有什么就装什么。
+        这样以后服务器新增了模块文件也能自动到位，
+        不会出现「代码更新了但新文件没装上」的半拉子状态。
+        """
+        import hashlib
         import urllib.request
         import zipfile
 
-        url = "https://github.com/%s/releases/latest/download/darkcard-server.zip" % UPDATE_REPO
+        url = _update_url()
         tmp = os.path.join(HERE, ".update.tmp.zip")
+        old_version = _local_game_version()   # 解压会覆盖 版本.txt，先记住旧的
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "darkcard-server"})
             with urllib.request.urlopen(req, timeout=120) as r:
                 data = r.read()
             with open(tmp, "wb") as f:
                 f.write(data)
+
+            changed = {"rule": False, "runtime": False, "deps": False}
             with zipfile.ZipFile(tmp) as z:
-                for name in z.namelist():
-                    # 只覆盖白名单里的文件，别让包里的东西乱写
-                    if name not in ("server.py", "engine.py", "cards.json",
-                                    "update.sh", "使用说明.txt", "版本.txt"):
+                for info in z.infolist():
+                    name = info.filename
+                    if info.is_dir():
                         continue
-                    z.extract(name, HERE)
+                    base = os.path.basename(name)
+                    if base in PRESERVE_FILES:
+                        continue                      # 玩家数据，绝不能覆盖
+                    if base.startswith(".update") or base.endswith((".log", ".pid")):
+                        continue                      # 临时文件与日志
+                    new_bytes = z.read(name)
+                    new_hash = hashlib.sha256(new_bytes).hexdigest()
+                    dest = os.path.join(HERE, base)
+                    old_hash = ""
+                    if os.path.isfile(dest):
+                        with open(dest, "rb") as f:
+                            old_hash = hashlib.sha256(f.read()).hexdigest()
+                    if old_hash == new_hash:
+                        continue                      # 没变，不动它
+                    # 写文件（zipfile 的 extract 会做路径穿越防护，但这里我们自己控目标路径）
+                    with open(dest, "wb") as f:
+                        f.write(new_bytes)
+                    if base in RULE_FILES:
+                        changed["rule"] = True
+                    elif base == "requirements.txt":
+                        changed["deps"] = True
+                    elif base in META_FILES:
+                        pass                           # 说明文件 / 版本号 / 更新脚本
+                    else:
+                        changed["runtime"] = True      # server.py 或新增模块 → 要重启
         except Exception as exc:  # noqa: BLE001
             print("[darkcard] 下载失败：%s" % exc, flush=True)
-            return False
+            return None
         finally:
             if os.path.exists(tmp):
                 try:
                     os.remove(tmp)
                 except OSError:
                     pass
+
         # 写个标记：新代码已经在磁盘上，但当前进程还在跑旧代码。
         # 标记让下次启动能知道自己是从哪一版升上来的。
         try:
             with open(os.path.join(HERE, ".updated_from"), "w", encoding="utf-8") as f:
-                f.write("%s -> %s\n" % (_local_game_version(), _remote_game_version()))
+                f.write("%s -> %s\n" % (old_version, _remote_game_version()))
         except OSError:
             pass
-        print("[darkcard] 新文件已解压到 %s" % HERE, flush=True)
+        if any(changed.values()):
+            print("[darkcard] 新文件已解压到 %s（规则层=%s 进程层=%s 依赖=%s）" % (
+                HERE, changed["rule"], changed["runtime"], changed["deps"]), flush=True)
+        return changed
+
+    def _install_deps(self) -> bool:
+        """装 requirements.txt 里的依赖。返回是否成功。
+
+        服务器一直是纯标准库，所以这个文件通常是空的。
+        以后真要引第三方库，把依赖写进 server/requirements.txt，
+        自动更新会顺手装上——否则会出现「代码更新了但 import 失败」。
+
+        装不上不致命：只警告，让服务器继续用旧代码跑。
+        """
+        import subprocess
+        import sys
+
+        req = os.path.join(HERE, "requirements.txt")
+        if not os.path.exists(req):
+            return True
+        try:
+            with open(req, "r", encoding="utf-8") as f:
+                lines = [ln.strip() for ln in f
+                         if ln.strip() and not ln.strip().startswith("#")]
+        except OSError:
+            return True
+        if not lines:
+            return True
+        print("[darkcard] 安装依赖：%s" % ", ".join(lines), flush=True)
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", req],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+        except Exception as exc:  # noqa: BLE001
+            print("[darkcard] 依赖安装失败（不影响服务）：%s" % exc, flush=True)
+            return False
+        if proc.returncode != 0:
+            print("[darkcard] 依赖安装失败（不影响服务）：%s" % (
+                proc.stdout.decode("utf-8", "replace")[-400:]), flush=True)
+            return False
+        print("[darkcard] 依赖安装完成", flush=True)
         return True
 
     def _exec_restart(self) -> None:
@@ -1196,8 +1332,8 @@ def main() -> None:
         print("[darkcard] 自动更新已关闭（--no-auto-update）", flush=True)
     else:
         AutoUpdater(hub).start()
-        print("[darkcard] 自动更新已开启：每 %d 分钟查一次，有新版自动热重载（不重启）"
-              % int(AutoUpdater.CHECK_INTERVAL), flush=True)
+        print("[darkcard] 自动更新已开启：每 %.0f 秒查一次，有新版自动生效"
+              % AutoUpdater._interval(), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
