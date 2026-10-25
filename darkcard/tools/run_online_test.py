@@ -59,7 +59,9 @@ def main() -> int:
 
     print("── 起服务器")
     srv = subprocess.Popen(
-        [sys.executable, SERVER, "--port", str(PORT), "--store", store],
+        # 显式绑回环地址，避免本地测试触发防火墙弹窗
+        [sys.executable, SERVER, "--port", str(PORT),
+         "--host", "127.0.0.1", "--store", store],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     time.sleep(2.0)

@@ -97,6 +97,31 @@ systemctl status darkcard
 nohup python3 server.py --port 8737 > server.log 2>&1 &
 ```
 
+## 防火墙
+
+服务器默认绑 `0.0.0.0`（监听所有网卡），这是公网能连上的前提。
+Linux 上如果装了 ufw / firewalld，需要放行这个端口：
+
+```bash
+# ufw
+ufw allow 8737/tcp
+
+# firewalld
+firewall-cmd --permanent --add-port=8737/tcp && firewall-cmd --reload
+
+# 云服务器还要在控制台的安全组里放行 8737
+```
+
+只想在本机跑（比如调试），可以绑回环地址，不占端口也不对外暴露：
+
+```bash
+python3 server.py --host 127.0.0.1 --port 8737
+```
+
+> 在 Windows 上用 0.0.0.0 跑会弹「Python 需要允许通过防火墙」的提示。
+> 那是 Windows 防火墙的入站规则询问，选「取消」也能跑（只是外部连不进来）。
+> 本地测试时用 `--host 127.0.0.1` 就不会弹。
+
 ## 端口映射
 
 对方的服务器上跑 8737，让映射把公网端口指到 **8737/tcp**。

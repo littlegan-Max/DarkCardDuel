@@ -109,8 +109,10 @@ def main() -> int:
     if os.path.exists(store):
         os.remove(store)
     proc = subprocess.Popen(
+        # 显式绑回环地址：默认是 0.0.0.0（监听所有网卡），
+        # 本地测试绑全网卡会触发 Windows 防火墙弹窗，也没必要对外暴露
         [sys.executable, os.path.join(HERE, "server.py"), "--port", str(port),
-         "--store", store],
+         "--host", "127.0.0.1", "--store", store],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     base = "http://127.0.0.1:%d" % port
