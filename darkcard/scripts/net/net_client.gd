@@ -48,6 +48,7 @@ var _cfg_path := "user://net_profile.cfg"
 var _pending_cmd := ""
 var _cmd_queue: Array = []
 var _cmd_inflight := false
+var _pending_job: Dictionary = {}   # 在途指令，场景切换时需要重发
 var _host_locked := false   # 调用方显式设过地址后，存档不再覆盖
 var version_mismatch := ""   # 非空表示服务器与本地版本对不上
 
@@ -55,6 +56,29 @@ var version_mismatch := ""   # 非空表示服务器与本地版本对不上
 func _ready() -> void:
 	_ensure_requests()
 	_load_profile()
+	# 窗口关闭时先把连接收干净再退出：
+	# 长轮询会被服务器 hold 住（最长 40 秒），不主动掐掉的话，
+	# 主线程退出时要等工作线程，进程就赖在后台不消失——
+	# 玩家看到的是「窗口关了，游戏还在里面跑」。
+	var win := get_tree().root
+	if not win.close_requested.is_connected(_on_app_close):
+		win.close_requested.connect(_on_app_close)
+
+
+## 窗口被关闭：停轮询、掐掉在途请求。
+func _on_app_close() -> void:
+	shutdown()
+
+
+## 收尾：停止长轮询并取消在途 HTTP 请求。
+func shutdown() -> void:
+	_stopped = true
+	_polling = false
+	_cmd_inflight = false
+	if _poll_req != null:
+		_poll_req.cancel_request()
+	if _cmd_req != null:
+		_cmd_req.cancel_request()
 
 
 ## 显式设置服务器地址并落盘。
@@ -155,6 +179,7 @@ func _pump_cmd_queue() -> void:
 	var job: Dictionary = _cmd_queue.pop_front()
 	_cmd_inflight = true
 	_pending_cmd = str(job["cmd"])
+	_pending_job = job
 	var body: Dictionary = job["body"]
 	body["player_id"] = player_id
 	body["token"] = token
@@ -175,6 +200,7 @@ func _pump_cmd_queue() -> void:
 func _on_cmd_done(result: int, code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
 	var cmd := _pending_cmd
 	_pending_cmd = ""
+	_pending_job = {}
 	_cmd_inflight = false
 	if result != HTTPRequest.RESULT_SUCCESS:
 		emit_signal("command_result", cmd, {"ok": false, "error": "连接失败（%d）" % code})
@@ -271,6 +297,23 @@ func _retry_poll(delay: float) -> void:
 		return
 	var t := get_tree().create_timer(delay)
 	t.timeout.connect(func() -> void: _poll_once())
+
+
+## 场景切换后重新接上（大厅 → 对战界面时，客户端节点被转到了新场景下）。
+##
+## HTTPRequest 离开场景树会中止在途请求，而且不会回调 request_completed，
+## 所以轮询标志必须手动重置——否则就是「显示已连接，但一条消息都收不到」。
+## 在途的那条指令也一起重发（响应已经随旧请求一起丢了）。
+func on_scene_transferred() -> void:
+	_stopped = false
+	_polling = false
+	if not _pending_job.is_empty():
+		_cmd_queue.push_front(_pending_job)
+		_pending_job = {}
+	_cmd_inflight = false
+	_pending_cmd = ""
+	_pump_cmd_queue()
+	_poll_once()
 
 
 func _on_poll_done(result: int, code: int, headers: PackedStringArray, body: PackedByteArray) -> void:

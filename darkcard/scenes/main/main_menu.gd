@@ -65,10 +65,10 @@ func _go(path: String) -> void:
 		_status.text = "找不到场景：" + path
 		_status.add_theme_color_override("font_color", UiPalette.RED)
 		return
+	# 切换必须走 SceneRouter：新场景要挂到 root 下，
+	# 直接 add_child 到自己身上会跟着本节点一起被释放（黑屏）。
 	var next: Control = load(path).instantiate()
-	add_child(next)
-	get_tree().current_scene = next
-	queue_free()
+	SceneRouter.swap(get_tree(), next)
 
 
 func _big_btn(t: String, sub: String, cb: Callable) -> Button:

@@ -92,6 +92,9 @@ func _build_ui() -> void:
 	top.add_child(sp)
 	_online_label = _lab("在线 0", 12, UiPalette.TEAL)
 	top.add_child(_online_label)
+	var home := _btn("主菜单", _on_go_home)
+	home.custom_minimum_size = Vector2(56, 28)
+	top.add_child(home)
 
 	_status = _lab("未连接", 11, UiPalette.DIM)
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -677,16 +680,24 @@ func _set_status(text: String, color: Color) -> void:
 
 # ---------------------------------------------------------------- 进入对战
 
+## 回主菜单。留在房间里的要先退出，否则服务器那边房间还挂着人。
+func _on_go_home() -> void:
+	if client != null and _room_id != "":
+		client.leave_room()
+	var main: Control = load("res://scenes/main/Main.tscn").instantiate()
+	SceneRouter.swap(get_tree(), main)
+
+
 func _enter_battle() -> void:
 	if client == null or not client.has_identity():
 		return
 	var ctrl := MatchController.new()
 	ctrl.setup_online(db, client)
 	var battle: Control = load("res://scenes/Battle.tscn").instantiate()
-	add_child(battle)
+	# 长连接客户端一起转到对战场景：大厅被释放时不能把连接一起带走，
+	# 否则进了对战界面就是「连着但收不到任何消息」。
+	SceneRouter.swap(get_tree(), battle, [client])
 	battle.call("setup_online", ctrl)
-	get_tree().current_scene = battle
-	queue_free()
 
 
 # ---------------------------------------------------------------- 小工具

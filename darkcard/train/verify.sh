@@ -24,6 +24,7 @@ echo
 
 run "卡表校验" "$GODOT" --headless --path "$PROJ" --script res://tools/validate_cards.gd
 run "GDScript 单测" "$GODOT" --headless --path "$PROJ" --script res://tests/test_runner.gd
+run "场景切换（主菜单黑屏回归）" "$GODOT" --headless --path "$PROJ" --script res://tools/test_scene_nav.gd
 run "Python 引擎对齐" python "$PROJ/train/test_align.py"
 run "策略网络前向" "$GODOT" --headless --path "$PROJ" --script res://tools/test_policy_net.gd
 run "特征跨语言比对" python "$PROJ/train/export_features_ref.py"

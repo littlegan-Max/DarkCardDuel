@@ -45,6 +45,9 @@ var _log_lines: Array[String] = []
 var _gameover: Control
 var _gameover_title: Label
 var _gameover_sub: Label
+var _exit_panel: Control      # 退出确认层
+var _exit_title: Label
+var _exit_body: Label
 var _detail: CardDetail
 var _hint: Label
 
@@ -58,7 +61,9 @@ func _ready() -> void:
     opponent_model = OpponentStore.load_model()
     _build_ui()
     _start_match()
-    _report_presence("in_game_ai")
+    # 延迟一帧再报状态：联机对战时 controller 是大厅切场景时接上的，
+    # 立刻报的话会把「人机对战」错报给好友。
+    _report_presence.call_deferred("in_game_ai")
 
 
 ## 上报自己的状态。
@@ -78,7 +83,12 @@ func _report_presence(state: String) -> void:
         return
     c.set_server(c.host, c.port)
     c.set_presence(state)
-    c.call_deferred("queue_free")
+    # 不能马上删：HTTP 请求还在路上，删了节点请求就断了，
+    # 好友那边永远看不到「人机对战」。等几秒再收。
+    var t := get_tree().create_timer(6.0)
+    t.timeout.connect(func() -> void:
+        if is_instance_valid(c):
+            c.queue_free())
 
 
 func _process(delta: float) -> void:
@@ -131,6 +141,7 @@ func _build_ui() -> void:
 
     _build_log()
     _build_gameover()
+    _build_exit_confirm()
 
     _profile = OpponentProfile.new()
     add_child(_profile)
@@ -193,6 +204,7 @@ func _build_top() -> Control:
     top.add_child(_pill_button("画像", _toggle_profile))
     top.add_child(_pill_button("日志", _toggle_log))
     top.add_child(_pill_button("重开", _on_restart))
+    top.add_child(_pill_button("菜单", _on_open_menu))
     return top
 
 
@@ -469,6 +481,73 @@ func _build_gameover() -> void:
     _style_primary(again)
     again.pressed.connect(_on_restart)
     v.add_child(again)
+
+    var home := Button.new()
+    home.text = "返回主菜单"
+    home.custom_minimum_size = Vector2(180, 40)
+    home.focus_mode = Control.FOCUS_NONE
+    _style_ghost(home)
+    home.pressed.connect(_on_go_home)
+    v.add_child(home)
+
+
+## 退出确认层：对局中想走之前先问一句，别手滑把这一局丢了。
+func _build_exit_confirm() -> void:
+    _exit_panel = Control.new()
+    add_child(_exit_panel)
+    _exit_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    _exit_panel.z_index = 40
+    _exit_panel.visible = false
+
+    var dim := ColorRect.new()
+    dim.color = Color(0.02, 0.03, 0.06, 0.80)
+    _exit_panel.add_child(dim)
+    dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+    var cc := CenterContainer.new()
+    _exit_panel.add_child(cc)
+    cc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+    var panel := PanelContainer.new()
+    panel.custom_minimum_size = Vector2(300, 0)
+    var sb := UiPalette.panel_box(Color("#161E30"), 20, UiPalette.GOLD)
+    sb.set_content_margin_all(22)
+    panel.add_theme_stylebox_override("panel", sb)
+    cc.add_child(panel)
+
+    var v := VBoxContainer.new()
+    v.add_theme_constant_override("separation", 12)
+    panel.add_child(v)
+
+    _exit_title = _lab("返回主菜单？", 20, UiPalette.GOLD)
+    _exit_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    v.add_child(_exit_title)
+
+    _exit_body = _lab("", 12, UiPalette.TEXT)
+    _exit_body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    _exit_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    v.add_child(_exit_body)
+
+    var row := HBoxContainer.new()
+    row.alignment = BoxContainer.ALIGNMENT_CENTER
+    row.add_theme_constant_override("separation", 12)
+    v.add_child(row)
+
+    var stay := Button.new()
+    stay.text = "继续这局"
+    stay.custom_minimum_size = Vector2(132, 44)
+    stay.focus_mode = Control.FOCUS_NONE
+    _style_ghost(stay)
+    stay.pressed.connect(_on_exit_cancel)
+    row.add_child(stay)
+
+    var go := Button.new()
+    go.text = "返回主菜单"
+    go.custom_minimum_size = Vector2(132, 44)
+    go.focus_mode = Control.FOCUS_NONE
+    _style_primary(go)
+    go.pressed.connect(_on_exit_confirm)
+    row.add_child(go)
 
 
 ## 联机模式：由大厅在切场景前调用，把已建好的控制器交给对战界面
@@ -846,6 +925,62 @@ func _on_restart() -> void:
     _start_match()
 
 
+# ---------------------------------------------------------------- 返回主菜单
+
+## 现在是不是联机对局。
+func _is_online() -> bool:
+    return controller != null and controller.mode == MatchController.MODE_ONLINE
+
+
+## 点「菜单」：先问一句，别手滑把这一局丢了。
+func _on_open_menu() -> void:
+    if _exit_panel == null:
+        return
+    if _is_online():
+        _exit_title.text = "退出这一局？"
+        _exit_body.text = "联机对战中退出，这一局判你输，对手直接获胜。"
+    else:
+        _exit_title.text = "返回主菜单？"
+        _exit_body.text = "本局进度会丢失，对手习惯按中途退出结算。"
+    _exit_panel.visible = true
+
+
+func _on_exit_cancel() -> void:
+    if _exit_panel != null:
+        _exit_panel.visible = false
+
+
+## 确认退出：先把这局收干净，再切回主菜单。
+func _on_exit_confirm() -> void:
+    if _exit_panel != null:
+        _exit_panel.visible = false
+    _leave_match_and_go_home()
+
+
+## 结算面板上的「返回主菜单」：局已经结束了，直接走。
+func _on_go_home() -> void:
+    _leave_match_and_go_home()
+
+
+func _leave_match_and_go_home() -> void:
+    busy = true
+    # 这一局算结束了：衰减历史倾向并落盘（中途退出也算）
+    if opponent_model != null and duel != null and not duel.state.over:
+        opponent_model.end_match()
+        _save_opponent_model()
+
+    if _is_online():
+        # 告诉服务器我们走了：这一局立刻判负，对手马上收到结果，
+        # 而不是干等着回合超时。不等它回执——切场景后客户端就没了。
+        var c: NetClient = controller.net
+        if c != null:
+            c.leave_room()
+            await get_tree().create_timer(0.4).timeout
+
+    var main: Control = load("res://scenes/main/Main.tscn").instantiate()
+    SceneRouter.swap(get_tree(), main)
+
+
 func _toggle_log() -> void:
     _log_panel.visible = not _log_panel.visible
 
@@ -1197,3 +1332,27 @@ func _style_primary(b: Button) -> void:
     b.add_theme_color_override("font_pressed_color", Color("#17110A"))
     b.add_theme_color_override("font_disabled_color", UiPalette.DIM)
     b.add_theme_font_size_override("font_size", 15)
+
+
+## 次要按钮：描边款，用在「继续这局」「返回主菜单」这种不是主操作的按钮上。
+func _style_ghost(b: Button) -> void:
+    var n := StyleBoxFlat.new()
+    n.bg_color = Color("#1A2338")
+    n.border_color = Color("#2A3550")
+    n.set_border_width_all(1)
+    n.set_corner_radius_all(14)
+    b.add_theme_stylebox_override("normal", n)
+
+    var h := n.duplicate() as StyleBoxFlat
+    h.bg_color = Color("#222C44")
+    b.add_theme_stylebox_override("hover", h)
+
+    var p := n.duplicate() as StyleBoxFlat
+    p.bg_color = Color("#151C2C")
+    b.add_theme_stylebox_override("pressed", p)
+
+    b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+    b.add_theme_color_override("font_color", UiPalette.TEXT)
+    b.add_theme_color_override("font_hover_color", Color.WHITE)
+    b.add_theme_color_override("font_pressed_color", UiPalette.DIM)
+    b.add_theme_font_size_override("font_size", 14)

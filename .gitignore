@@ -23,8 +23,8 @@ __pycache__/
 
 # 联机测试的临时产物
 .godot_test_user/
-server/store.json
-server/store.test.json
+**/server/store.json
+**/server/store.test.json
 
 # 服务器运行时产物
 darkcard/server/server.pid
