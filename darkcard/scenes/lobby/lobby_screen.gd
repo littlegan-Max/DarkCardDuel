@@ -26,13 +26,17 @@ var _room_id := ""
 var _queued := false
 var _refresh_timer := 0.0
 var _pending_friend_invite := ""
+var _disabled := false
 
 
 func _ready() -> void:
 	db = CardDB.load_all()
 	client = NetClient.new()
 	add_child(client)
+	# 把本地卡表的规则版本告诉客户端，握手时跟服务器比对
+	client.rules_version = db.rules_version
 	client.command_result.connect(_on_cmd_result)
+	client.version_error.connect(_on_version_error)
 	client.event_received.connect(_on_event)
 	client.online_count_changed.connect(_on_online_count)
 	client.disconnected.connect(func(r: String) -> void: _set_status("连接断开：" + r, UiPalette.RED))
@@ -217,6 +221,9 @@ func _build_friends() -> Control:
 # ---------------------------------------------------------------- 操作
 
 func _on_connect() -> void:
+	if _disabled:
+		_set_status("上次连接发现版本不一致，请先让服务器更新", UiPalette.RED)
+		return
 	client.set_server(_host_edit.text, int(_port_edit.text))
 	var nm := _name_edit.text.strip_edges()
 	if nm == "":
@@ -337,6 +344,22 @@ func _on_event(evt: Dictionary) -> void:
 			_set_status("%s 进了房间" % str(evt.get("player", {}).get("name", "")), UiPalette.GOLD)
 		"player_left":
 			_set_status("对手离开了", UiPalette.RED)
+
+
+func _on_version_error(message: String) -> void:
+	# 服务器上的卡表/协议跟本地对不上：这局打了也是错的，明确挡住
+	_set_status(message, UiPalette.RED)
+	_disabled = true
+	for b in _lock_buttons():
+		b.disabled = true
+
+
+func _lock_buttons() -> Array:
+	var out: Array = []
+	for b in [_match_btn, _create_btn, _join_btn, _invite_btn]:
+		if b != null:
+			out.append(b)
+	return out
 
 
 func _on_online_count(c: int) -> void:

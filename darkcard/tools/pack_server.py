@@ -14,8 +14,10 @@ zip 里只有 3 个文件（~90 KB），不依赖仓库结构、不需要 pip in
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import time
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +34,7 @@ FILES = [
 
 README = """暗牌技能对战 · 联机服务器
 =========================
+版本：游戏 {{GAME_VERSION}} / 规则 {{RULES_VERSION}}
 
 这个包里只有 3 个文件，不需要装任何依赖，只要机器上有 Python 3.8+ 就能跑。
 
@@ -68,6 +71,27 @@ store.json 存玩家昵称和好友关系（不含对局）。
 """
 
 
+def _versions() -> tuple[str, str]:
+    """读出打包内容的版本：游戏版本（project.godot）与规则版本（cards.json）。"""
+    game_ver = "?"
+    rules_ver = "?"
+    proj = os.path.join(PROJ, "project.godot")
+    if os.path.exists(proj):
+        with open(proj, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("config/version="):
+                    game_ver = line.split("=", 1)[1].strip().strip('"')
+                    break
+    cards = os.path.join(PROJ, "data", "cards.json")
+    if os.path.exists(cards):
+        with open(cards, "r", encoding="utf-8") as f:
+            try:
+                rules_ver = str(json.load(f).get("rules_version", "?"))
+            except ValueError:
+                pass
+    return game_ver, rules_ver
+
+
 def main() -> int:
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     missing = [src for src, _ in FILES if not os.path.exists(src)]
@@ -77,17 +101,29 @@ def main() -> int:
             print("  " + m)
         return 1
 
-    with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as z:
+    game_ver, rules_ver = _versions()
+
+    # 文件名带版本号，一眼看出服务器上跑的是哪一版
+    out_name = "darkcard-server-v%s.zip" % game_ver
+    out_path = os.path.join(os.path.dirname(OUT), out_name)
+
+    readme = README.replace("{{GAME_VERSION}}", game_ver).replace("{{RULES_VERSION}}", rules_ver)
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         for src, name in FILES:
             z.write(src, name)
-        z.writestr("使用说明.txt", README)
+        z.writestr("使用说明.txt", readme)
+        # 版本信息单独放一个文件，服务器起来时打印出来
+        z.writestr("版本.txt", "游戏版本 %s\n规则版本 %s\n打包时间 %s\n" % (
+            game_ver, rules_ver, time.strftime("%Y-%m-%d %H:%M:%S")))
 
-    size = os.path.getsize(OUT)
-    print("已打包：%s  (%.1f KB)" % (OUT, size / 1024))
+    size = os.path.getsize(out_path)
+    print("已打包：%s  (%.1f KB)" % (out_path, size / 1024))
+    print("版本：游戏 %s / 规则 %s" % (game_ver, rules_ver))
     print("包含：")
     for src, name in FILES:
         print("  %-14s <- %s" % (name, os.path.relpath(src, ROOT)))
     print("  %-14s <- 内嵌说明" % "使用说明.txt")
+    print("  %-14s <- 版本信息" % "版本.txt")
     return 0
 
 

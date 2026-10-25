@@ -79,6 +79,11 @@ ENGINE_PATH = _pick(
 STORE_PATH = os.path.join(HERE, "store.json")
 
 PASS_ID = "pass"
+
+# 协议版本：客户端与服务器之间的消息格式。
+# 改了协议（新增命令 / 改事件结构）就 +1，服务器会拒绝不匹配的客户端。
+PROTOCOL_VERSION = 1
+
 TURN_SECONDS = 20.0
 POLL_HOLD_SECONDS = 15.0
 ROOM_IDLE_SECONDS = 1800.0
@@ -367,6 +372,10 @@ class Hub:
         self.pending_invites: dict[str, list[dict[str, Any]]] = {}
         self.match_queue: list[str] = []
         self.db = _engine.DB(CARDS_PATH)
+        # 规则版本：来自卡表。客户端拿它跟自己的卡表比对，
+        # 不一致说明服务器上的卡表是旧版（改了规则但服务器没更新），
+        # 这时两边会用不同规则结算同一手牌，必须挡住。
+        self.rules_version = str(getattr(self.db, "version", ""))
 
     # ---- 在线人数 ----
     def online_count(self) -> int:
@@ -571,7 +580,11 @@ class Api:
         name = str(body.get("name", "")).strip()[:16] or "无名氏"
         p = self.hub.store.create_player(name)
         self.hub.touch(p["id"], name)
-        return {"ok": True, "token": p["token"], "player_id": p["id"], "name": name}
+        return {
+            "ok": True, "token": p["token"], "player_id": p["id"], "name": name,
+            "protocol_version": PROTOCOL_VERSION,
+            "rules_version": self.hub.rules_version,
+        }
 
     def cmd_login(self, body: dict[str, Any]) -> dict[str, Any]:
         token = str(body.get("token", ""))
@@ -582,6 +595,8 @@ class Api:
         return {
             "ok": True, "token": p["token"], "player_id": p["id"], "name": p["name"],
             "online_count": self.hub.online_count(),
+            "protocol_version": PROTOCOL_VERSION,
+            "rules_version": self.hub.rules_version,
         }
 
     def cmd_rename(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -724,6 +739,14 @@ class Api:
         room = self.hub.rooms.get(rid)
         if room is None:
             return {"ok": False, "error": "房间不存在"}
+        # 规则版本不符就别让这局开始（两边算出来的结果必然对不上）
+        client_rules = str(body.get("rules_version", ""))
+        if client_rules and client_rules != self.hub.rules_version:
+            return {
+                "ok": False,
+                "error": "游戏版本与服务器不一致（你的是 %s，服务器是 %s），"
+                         "请让服务器更新后重试" % (client_rules, self.hub.rules_version),
+            }
         seat = room.seat_of(pid)
         with room.lock:
             if not room.started:
@@ -909,6 +932,8 @@ def main() -> None:
     server.daemon_threads = True
     print("[darkcard] 服务器启动 http://%s:%d  （卡表 %d 张）" % (
         args.host, args.port, len(hub.db.order)), flush=True)
+    print("[darkcard] 规则版本 %s · 协议版本 %d" % (
+        hub.rules_version, PROTOCOL_VERSION), flush=True)
     print("[darkcard] 内网穿透请把公网端口映射到 %d/tcp" % args.port, flush=True)
     try:
         server.serve_forever()

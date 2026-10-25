@@ -36,6 +36,7 @@ func _initialize() -> void:
 	client = NetClient.new()
 	root.add_child(client)
 	client.set_server("127.0.0.1", port)
+	client.rules_version = db.rules_version
 	client.command_result.connect(_on_cmd)
 	client.event_received.connect(_on_event)
 

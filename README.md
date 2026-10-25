@@ -47,7 +47,11 @@ python3 darkcard/server/server.py --port 8737
 curl -s http://你的公网地址:公网端口/api/health
 ```
 
-部署细节（上传、systemd、端口映射、排查）见 [`darkcard/server/README.md`](darkcard/server/README.md)。
+部署细节（上传、systemd、端口映射、更新流程、排查）见 [`darkcard/server/README.md`](darkcard/server/README.md)。
+
+**以后更新了要不要重发服务器**：只改客户端不用；改了规则或联机协议要。
+卡表里的 `rules_version` 就是干这个的——客户端连上时跟服务器比对，
+不一致会直接提示「请让服务器更新」，不会让你打一局结果错乱的比赛。
 
 ### 架构：服务器权威 + 客户端本地重放
 

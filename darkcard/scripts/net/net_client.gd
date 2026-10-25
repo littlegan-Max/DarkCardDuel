@@ -19,12 +19,17 @@ signal event_received(evt: Dictionary)
 signal command_result(cmd: String, res: Dictionary)
 signal online_count_changed(count: int)
 signal rooms_changed(rooms: Array)
+signal version_error(message: String)
 
 const DEFAULT_HOST := "127.0.0.1"
 const DEFAULT_PORT := 8737
 
+# 协议版本：与服务器必须一致。改了消息格式就两边一起 +1。
+const PROTOCOL_VERSION := 1
+
 var host := DEFAULT_HOST
 var port := DEFAULT_PORT
+var rules_version := ""      # 本地卡表的规则版本
 var token := ""
 var player_id := ""
 var player_name := ""
@@ -41,6 +46,7 @@ var _pending_cmd := ""
 var _cmd_queue: Array = []
 var _cmd_inflight := false
 var _host_locked := false   # 调用方显式设过地址后，存档不再覆盖
+var version_mismatch := ""   # 非空表示服务器与本地版本对不上
 
 
 func _ready() -> void:
@@ -149,6 +155,10 @@ func _pump_cmd_queue() -> void:
 	var body: Dictionary = job["body"]
 	body["player_id"] = player_id
 	body["token"] = token
+	# 带上本地规则版本，服务器会拿它跟自己的卡表比对：
+	# 改了规则但服务器没更新时，两边算出来的结果必然对不上，必须挡住
+	if rules_version != "":
+		body["rules_version"] = rules_version
 	var headers := PackedStringArray(["Content-Type: application/json"])
 	var err := _cmd_req.request(server_url() + "/api/" + str(job["cmd"]), headers,
 		HTTPClient.METHOD_POST, JSON.stringify(body))
@@ -173,6 +183,9 @@ func _on_cmd_done(result: int, code: int, headers: PackedStringArray, body: Pack
 		_pump_cmd_queue()
 		return
 	var res: Dictionary = parsed
+	# 版本握手：服务器上的卡表/协议跟本地不一致就别往下走了
+	if res.get("ok") and res.has("rules_version"):
+		_check_version(res)
 	# 注册 / 登录成功后记住身份，下次启动直接续上
 	if res.get("ok") and res.has("token"):
 		token = str(res["token"])
@@ -181,6 +194,23 @@ func _on_cmd_done(result: int, code: int, headers: PackedStringArray, body: Pack
 		_save_profile()
 	emit_signal("command_result", cmd, res)
 	_pump_cmd_queue()
+
+
+## 校验服务器版本。
+## rules_version 不一致 = 改了规则但服务器没更新（两边规则不同，必须挡住）。
+## protocol_version 不一致 = 消息格式变了（连不上，必须挡住）。
+func _check_version(res: Dictionary) -> void:
+	var srv_rules := str(res.get("rules_version", ""))
+	var srv_proto := int(res.get("protocol_version", PROTOCOL_VERSION))
+	if srv_proto != PROTOCOL_VERSION:
+		version_mismatch = "协议版本不匹配（服务器 %d，本地 %d），服务器需要更新" % [
+			srv_proto, PROTOCOL_VERSION]
+		emit_signal("version_error", version_mismatch)
+		return
+	if rules_version != "" and srv_rules != "" and srv_rules != rules_version:
+		version_mismatch = "规则版本不匹配（服务器 %s，本地 %s），服务器需要更新" % [
+			srv_rules, rules_version]
+		emit_signal("version_error", version_mismatch)
 
 
 func api(cmd: String, extra: Dictionary = {}) -> void:
