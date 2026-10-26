@@ -121,10 +121,11 @@ func _build_ui() -> void:
 	_ui_root.add_child(margin)
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var pad := 24 if _is_wide else 18
-	margin.add_theme_constant_override("margin_left", pad)
-	margin.add_theme_constant_override("margin_right", pad)
-	margin.add_theme_constant_override("margin_top", 16 if _is_wide else 14)
-	margin.add_theme_constant_override("margin_bottom", 16 if _is_wide else 14)
+	var safe := UiKit.safe_insets(self)
+	margin.add_theme_constant_override("margin_left", pad + int(safe.x))
+	margin.add_theme_constant_override("margin_right", pad + int(safe.z))
+	margin.add_theme_constant_override("margin_top", (16 if _is_wide else 14) + int(safe.y))
+	margin.add_theme_constant_override("margin_bottom", (16 if _is_wide else 14) + int(safe.w))
 
 	if _is_wide:
 		_build_wide(margin)

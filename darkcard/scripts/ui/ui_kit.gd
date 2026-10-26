@@ -48,6 +48,28 @@ static func backdrop(parent: Control) -> void:
 	glow.position = Vector2(vp.x * 0.5, vp.y * 0.2) - glow.size * 0.5
 
 
+## 手机刘海 / 挖孔 / home 条的安全区，换算成逻辑坐标下的四边内缩。
+## 返回 Vector4(左, 上, 右, 下)。桌面与无刘海设备返回全 0。
+static func safe_insets(node: Control) -> Vector4:
+	var win := DisplayServer.window_get_size()
+	if win.x <= 0 or win.y <= 0:
+		return Vector4.ZERO
+	var safe := DisplayServer.get_display_safe_area()
+	if safe.size.x <= 0 or safe.size.y <= 0:
+		return Vector4.ZERO
+	if safe.position.x <= 0 and safe.position.y <= 0 \
+			and safe.end.x >= win.x and safe.end.y >= win.y:
+		return Vector4.ZERO                      # 没有安全区，别白留边
+	# 物理像素 → 逻辑像素：逻辑视口 / 窗口
+	var vp := node.get_viewport_rect().size
+	var k := vp.x / float(win.x)
+	return Vector4(
+		float(safe.position.x) * k,
+		float(safe.position.y) * k,
+		float(win.x - safe.end.x) * k,
+		float(win.y - safe.end.y) * k)
+
+
 # ---------------------------------------------------------------- 文字
 
 static func label(text: String, size: int, color: Color) -> Label:
