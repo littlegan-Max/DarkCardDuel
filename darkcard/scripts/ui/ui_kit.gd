@@ -31,9 +31,11 @@ static func backdrop(parent: Control) -> void:
 	parent.add_child(bg)
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	var vp := Vector2(
-		float(ProjectSettings.get_setting("display/window/size/viewport_width", 540)),
-		float(ProjectSettings.get_setting("display/window/size/viewport_height", 960)))
+	# 用实际可见区算，别用项目里写的 540x960：
+	# 拉伸模式一改（比如宽屏下 expand），写死的尺寸会让散光贴图露边、跑偏。
+	var vp := parent.get_viewport_rect().size
+	if vp.x <= 0.0 or vp.y <= 0.0:
+		vp = Vector2(540, 960)
 	var side := vp.length() * 1.6
 
 	var glow := TextureRect.new()
@@ -262,9 +264,13 @@ static func danger(text: String, height: int = H_GHOST, radius: int = 12) -> But
 
 
 ## 页签：选中时底部一条金线。
-static func tab(text: String) -> Button:
+static func tab(text: String, expand: bool = true) -> Button:
 	var b := _shell(text, 34, 13)
-	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if expand:
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	else:
+		b.custom_minimum_size.x = 104
+		b.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	style_tab(b, false)
 	return b
 

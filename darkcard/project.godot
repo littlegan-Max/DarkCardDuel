@@ -13,6 +13,10 @@ config/version="0.3.4"
 run/main_scene="res://scenes/main/Main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
+[autoload]
+
+ScreenMode="*res://scripts/core/screen_mode.gd"
+
 [display]
 
 window/size/viewport_width=540
@@ -31,4 +35,5 @@ theme/custom_font="res://assets/fonts/ui.otf"
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.043137, 0.062745, 0.12549, 1)
 textures/vram_compression/import_etc2_astc=true
