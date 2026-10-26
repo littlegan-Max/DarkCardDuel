@@ -60,6 +60,7 @@ func _ready() -> void:
     db = CardDB.load_all()
     opponent_model = OpponentStore.load_model()
     _build_ui()
+    get_viewport().size_changed.connect(_on_viewport_resized)
     _start_match()
     # 延迟一帧再报状态：联机对战时 controller 是大厅切场景时接上的，
     # 立刻报的话会把「人机对战」错报给好友。
@@ -106,6 +107,9 @@ func _process(delta: float) -> void:
         _on_timeout()
 
 
+var _hand_grid: GridContainer
+
+
 func _build_ui() -> void:
     var bg := TextureRect.new()
     bg.texture = UiPalette.gradient(UiPalette.BG_TOP, UiPalette.BG_BOTTOM)
@@ -114,8 +118,9 @@ func _build_ui() -> void:
     add_child(bg)
     bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-    _add_glow(Vector2(270, 300), 460, UiPalette.GOLD, 0.10)
-    _add_glow(Vector2(270, 700), 420, UiPalette.TEAL, 0.07)
+    var vw := get_viewport_rect().size.x
+    _add_glow(Vector2(vw * 0.5, 300), 460, UiPalette.GOLD, 0.10)
+    _add_glow(Vector2(vw * 0.5, 700), 420, UiPalette.TEAL, 0.07)
 
     var margin := MarginContainer.new()
     add_child(margin)
@@ -287,6 +292,19 @@ func _build_combo() -> Control:
     return row
 
 
+## 手牌每行几张：按可用宽度算，别写死 3 列（宽屏下会空出一大片）。
+## 卡片固定 152 宽 + 8 间距，两侧留 40；至少 3 列，最多 10 列。
+func _hand_columns() -> int:
+    var w := get_viewport_rect().size.x
+    var n := int(floor((w - 40.0) / 160.0))
+    return clampi(n, 3, 10)
+
+
+func _on_viewport_resized() -> void:
+    if _hand_grid != null and is_instance_valid(_hand_grid):
+        _hand_grid.columns = _hand_columns()
+
+
 func _build_hand() -> Control:
     var hand := PanelContainer.new()
     hand.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -317,7 +335,11 @@ func _build_hand() -> Control:
         b.button_group = group
         b.focus_mode = Control.FOCUS_NONE
         b.custom_minimum_size.y = 26
-        b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        if get_viewport_rect().size.x >= 900.0:
+            b.custom_minimum_size.x = 96
+            b.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+        else:
+            b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
         b.add_theme_font_size_override("font_size", 12)
         _style_tab(b)
         b.pressed.connect(_set_filter.bind(item[0]))
@@ -350,7 +372,8 @@ func _build_hand() -> Control:
     hv.add_child(scroll)
 
     var grid := GridContainer.new()
-    grid.columns = 3
+    grid.columns = _hand_columns()
+    _hand_grid = grid
     grid.add_theme_constant_override("h_separation", 8)
     grid.add_theme_constant_override("v_separation", 8)
     grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
