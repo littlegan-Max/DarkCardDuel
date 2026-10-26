@@ -17,6 +17,8 @@ const TAB_ROOMS := 0
 const TAB_PLAYERS := 1
 const TAB_FRIENDS := 2
 const TAB_NAMES := ["房间", "在线", "好友"]
+## 屏幕逻辑宽度超过这个值就切桌面版面
+const WIDE_MIN := 900.0
 
 var client: NetClient
 var db: CardDB
@@ -26,7 +28,7 @@ var _status_dot: Panel
 var _online_label: Label
 var _room_code_edit: LineEdit
 var _friend_name_edit: LineEdit
-var _room_list: VBoxContainer
+var _room_list: Container
 var _friend_list: VBoxContainer
 var _players_list: VBoxContainer
 var _status_box: VBoxContainer
@@ -64,6 +66,13 @@ var _roster_timer := 0.0    # 名单轮询的独立计时（见 _process）
 var _pending_friend_invite := ""
 var _disabled := false
 var _connected := false   # 真的连上了（有存档 != 连着）
+var _ui_root: Control
+var _is_wide := false
+var _last_rooms: Array = []
+var _last_players: Array = []
+var _last_friends: Array = []
+var _last_status_text := "未连接"
+var _last_status_color := UiPalette.DIM
 
 
 func _ready() -> void:
@@ -87,6 +96,7 @@ func _ready() -> void:
 		_sync_identity()
 		_set_status("连接断开：" + r, UiPalette.RED))
 	_build_ui()
+	get_viewport().size_changed.connect(_on_viewport_resized)
 	# HTTPRequest 要节点在场景树里，重连必须等 UI 建完再发
 	_refresh_status.call_deferred()
 
@@ -94,16 +104,73 @@ func _ready() -> void:
 # ---------------------------------------------------------------- 搭界面
 
 func _build_ui() -> void:
-	UiKit.backdrop(self)
+	_is_wide = get_viewport_rect().size.x >= WIDE_MIN
+	if _ui_root != null and is_instance_valid(_ui_root):
+		_ui_root.queue_free()
+
+	# 所有 UI 挂在 _ui_root 下：改窗口尺寸跨过断点时整块重建，
+	# client 节点是 self 的直接子节点，不会跟着被清掉。
+	_ui_root = Control.new()
+	_ui_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ui_root.mouse_filter = Control.MOUSE_FILTER_PASS
+	add_child(_ui_root)
+
+	UiKit.backdrop(_ui_root)
 
 	var margin := MarginContainer.new()
-	add_child(margin)
+	_ui_root.add_child(margin)
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 18)
-	margin.add_theme_constant_override("margin_right", 18)
-	margin.add_theme_constant_override("margin_top", 14)
-	margin.add_theme_constant_override("margin_bottom", 14)
+	var pad := 24 if _is_wide else 18
+	margin.add_theme_constant_override("margin_left", pad)
+	margin.add_theme_constant_override("margin_right", pad)
+	margin.add_theme_constant_override("margin_top", 16 if _is_wide else 14)
+	margin.add_theme_constant_override("margin_bottom", 16 if _is_wide else 14)
 
+	if _is_wide:
+		_build_wide(margin)
+	else:
+		_build_narrow(margin)
+
+	_restore_after_rebuild()
+
+
+## 桌面版：左边是「我是谁 + 打一局」，右边是列表区。
+## 竖列那套在 16:9 上会把每块面板拉成一条横幅，所以宽屏必须换版面。
+func _build_wide(margin: MarginContainer) -> void:
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 16)
+	margin.add_child(outer)
+
+	_build_header(outer)
+
+	var body := HBoxContainer.new()
+	body.add_theme_constant_override("separation", 20)
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(body)
+
+	var rail := VBoxContainer.new()
+	rail.add_theme_constant_override("separation", 14)
+	rail.custom_minimum_size.x = 392
+	body.add_child(rail)
+	_build_hero(rail)
+	_build_room_banner(rail)
+	var filler := Control.new()
+	filler.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	filler.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rail.add_child(filler)
+
+	var main := VBoxContainer.new()
+	main.add_theme_constant_override("separation", 10)
+	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(main)
+	_build_tabs(main)
+	_build_body(main)
+
+	_build_statusbar(outer)
+
+
+## 手机版：原样的一列
+func _build_narrow(margin: MarginContainer) -> void:
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 11)
 	margin.add_child(col)
@@ -116,7 +183,25 @@ func _build_ui() -> void:
 	_build_statusbar(col)
 
 
-func _build_header(col: VBoxContainer) -> void:
+## 重建后把当前状态填回去（页签、列表、状态条）
+func _restore_after_rebuild() -> void:
+	if _tab != TAB_ROOMS:
+		_switch_tab(_tab)
+	if _room_id != "":
+		_show_room()
+	_refresh_rooms(_last_rooms)
+	_refresh_players(_last_players)
+	_refresh_friends(_last_friends)
+	_set_status(_last_status_text, _last_status_color)
+
+
+func _on_viewport_resized() -> void:
+	var wide := get_viewport_rect().size.x >= WIDE_MIN
+	if wide != _is_wide:
+		_build_ui()
+
+
+func _build_header(col: Control) -> void:
 	var top := HBoxContainer.new()
 	top.add_theme_constant_override("separation", 8)
 	col.add_child(top)
@@ -161,7 +246,7 @@ func _build_header(col: VBoxContainer) -> void:
 	top.add_child(home)
 
 
-func _build_hero(col: VBoxContainer) -> void:
+func _build_hero(col: Control) -> void:
 	var pc := PanelContainer.new()
 	pc.add_theme_stylebox_override("panel",
 		UiKit.card(Color("#161E30"), 18, Color("#2C3A58")))
@@ -223,7 +308,7 @@ func _build_hero(col: VBoxContainer) -> void:
 	v.add_child(_match_info)
 
 
-func _build_room_banner(col: VBoxContainer) -> void:
+func _build_room_banner(col: Control) -> void:
 	_room_panel = PanelContainer.new()
 	_room_panel.add_theme_stylebox_override("panel",
 		UiKit.card(Color("#1C2438"), 16, UiPalette.GOLD_DEEP))
@@ -272,18 +357,25 @@ func _build_room_banner(col: VBoxContainer) -> void:
 	acts.add_child(_leave_btn)
 
 
-func _build_tabs(col: VBoxContainer) -> void:
+func _build_tabs(col: Control) -> void:
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 4)
+	row.add_theme_constant_override("separation", 6)
 	col.add_child(row)
+	_tab_btns.clear()
 	for i in TAB_NAMES.size():
-		var b := UiKit.tab(TAB_NAMES[i])
+		var b := UiKit.tab(TAB_NAMES[i], not _is_wide)
 		b.pressed.connect(_switch_tab.bind(i))
 		row.add_child(b)
 		_tab_btns.append(b)
+	if _is_wide:
+		# 宽屏下页签靠左排，右边留空，别让下划线拉成一条横幅
+		var pad := Control.new()
+		pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(pad)
 
 
-func _build_body(col: VBoxContainer) -> void:
+func _build_body(col: Control) -> void:
 	# 三张列表共用一个「内容区」面板：列表没几条时，空白也落在面板里，
 	# 不会看着像画面下半截漏风。
 	var pc := PanelContainer.new()
@@ -310,11 +402,12 @@ func _build_page_rooms() -> Control:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
 
-	var r1 := HBoxContainer.new()
-	r1.add_theme_constant_override("separation", 8)
+	var r1 := _capped_row()
 	v.add_child(r1)
 	_room_code_edit = UiKit.input("输入 6 位房号加入")
 	_room_code_edit.max_length = 6
+	if _is_wide:
+		_room_code_edit.custom_minimum_size.x = 300
 	_room_code_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_room_code_edit.text_changed.connect(func(t: String) -> void:
 		var up := t.to_upper()
@@ -328,11 +421,13 @@ func _build_page_rooms() -> Control:
 	_join_btn.pressed.connect(_on_join_room)
 	r1.add_child(_join_btn)
 
-	var r2 := HBoxContainer.new()
-	r2.add_theme_constant_override("separation", 8)
+	var r2 := _capped_row()
 	v.add_child(r2)
 	_create_btn = UiKit.ghost("创建房间", 38, 10)
-	_create_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _is_wide:
+		_create_btn.custom_minimum_size.x = 226
+	else:
+		_create_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_create_btn.pressed.connect(_on_create_room)
 	r2.add_child(_create_btn)
 
@@ -347,10 +442,13 @@ func _build_page_rooms() -> Control:
 	r2.add_child(_turn_opt)
 
 	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 8)
+	head.add_theme_constant_override("separation", 10)
+	if _is_wide:
+		head.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	v.add_child(head)
 	head.add_child(UiKit.section("公开房间"))
-	head.add_child(UiKit.spacer())
+	if not _is_wide:
+		head.add_child(UiKit.spacer())
 	var refresh := UiKit.pill("刷新", 50)
 	refresh.custom_minimum_size.y = 24
 	refresh.add_theme_font_size_override("font_size", 10)
@@ -359,8 +457,17 @@ func _build_page_rooms() -> Control:
 			client.list_rooms())
 	head.add_child(refresh)
 
-	_room_list = VBoxContainer.new()
-	_room_list.add_theme_constant_override("separation", 7)
+	# 窄屏还是竖列（空态才好居中），宽屏用两列网格把宽度用起来
+	if _is_wide:
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.add_theme_constant_override("h_separation", 10)
+		grid.add_theme_constant_override("v_separation", 7)
+		_room_list = grid
+	else:
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 7)
+		_room_list = box
 	v.add_child(_wrap_scroll(_room_list))
 	_refresh_rooms([])
 	return v
@@ -371,10 +478,13 @@ func _build_page_players() -> Control:
 	v.add_theme_constant_override("separation", 8)
 
 	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 8)
+	head.add_theme_constant_override("separation", 10)
+	if _is_wide:
+		head.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	v.add_child(head)
 	head.add_child(UiKit.section("在线玩家"))
-	head.add_child(UiKit.spacer())
+	if not _is_wide:
+		head.add_child(UiKit.spacer())
 	var refresh := UiKit.pill("刷新", 50)
 	refresh.custom_minimum_size.y = 24
 	refresh.add_theme_font_size_override("font_size", 10)
@@ -415,7 +525,7 @@ func _build_page_friends() -> Control:
 	return v
 
 
-func _build_statusbar(col: VBoxContainer) -> void:
+func _build_statusbar(col: Control) -> void:
 	var pc := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color("#0D1424")
@@ -442,6 +552,16 @@ func _build_statusbar(col: VBoxContainer) -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(_status)
+
+
+## 宽屏下把一行控件限制在 560 宽，别整条拉满。
+func _capped_row() -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	if _is_wide:
+		# 宽屏下按内容宽度靠左，不跟着整列拉成一整条
+		row.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	return row
 
 
 func _wrap_scroll(inner: Control) -> ScrollContainer:
@@ -724,6 +844,7 @@ func _update_match_info(status: Dictionary) -> void:
 
 
 func _refresh_players(players: Array) -> void:
+	_last_players = players
 	for c in _players_list.get_children():
 		_players_list.remove_child(c)
 		c.queue_free()
@@ -843,13 +964,17 @@ func _refresh_status() -> void:
 
 
 func _refresh_rooms(rooms: Array) -> void:
+	_last_rooms = rooms
 	for c in _room_list.get_children():
 		_room_list.remove_child(c)
 		c.queue_free()
 	if rooms.is_empty():
-		_room_list.add_child(_vfill())
-		_room_list.add_child(_empty("（暂无公开房间，上面点「创建房间」等人来）"))
-		_room_list.add_child(_vfill())
+		if _is_wide:
+			_room_list.add_child(_empty("暂无公开房间 · 左边「创建房间」开一个，等人进来"))
+		else:
+			_room_list.add_child(_vfill())
+			_room_list.add_child(_empty("（暂无公开房间，上面点「创建房间」等人来）"))
+			_room_list.add_child(_vfill())
 		return
 	for r in rooms:
 		if not (r is Dictionary):
@@ -883,6 +1008,7 @@ func _refresh_rooms(rooms: Array) -> void:
 
 
 func _refresh_friends(friends: Array) -> void:
+	_last_friends = friends
 	for c in _friend_list.get_children():
 		_friend_list.remove_child(c)
 		c.queue_free()
@@ -956,6 +1082,10 @@ func _empty(text: String) -> Control:
 
 
 func _set_status(text: String, color: Color) -> void:
+	_last_status_text = text
+	_last_status_color = color
+	if _status == null or not is_instance_valid(_status):
+		return
 	_status.text = text
 	_status.add_theme_color_override("font_color", color)
 	if _status_dot != null:
