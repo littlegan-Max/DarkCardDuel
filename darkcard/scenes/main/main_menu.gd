@@ -8,20 +8,99 @@ extends Control
 const LOBBY_SCENE := "res://scenes/lobby/Lobby.tscn"
 const BATTLE_SCENE := "res://scenes/Battle.tscn"
 
+## 逻辑宽度超过这个值就切桌面版面（和联机大厅用同一个断点）
+const WIDE_MIN := 900.0
+
 var _status: Label
+var _ui_root: Control
+var _is_wide := false
 
 
 func _ready() -> void:
 	_build_ui()
+	get_viewport().size_changed.connect(_on_viewport_resized)
 
 
 func _build_ui() -> void:
-	UiKit.backdrop(self)
+	_is_wide = get_viewport_rect().size.x >= WIDE_MIN
+	if _ui_root != null and is_instance_valid(_ui_root):
+		_ui_root.queue_free()
+	_ui_root = Control.new()
+	_ui_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ui_root.mouse_filter = Control.MOUSE_FILTER_PASS
+	add_child(_ui_root)
+
+	UiKit.backdrop(_ui_root)
 
 	var cc := CenterContainer.new()
-	add_child(cc)
+	_ui_root.add_child(cc)
 	cc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
+	if _is_wide:
+		_build_wide(cc)
+	else:
+		_build_narrow(cc)
+
+	# 版本号钉在屏幕底部
+	var ver := UiKit.label("v" + str(ProjectSettings.get_setting(
+		"application/config/version", "")), 10, UiPalette.DIM)
+	ver.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_ui_root.add_child(ver)
+	ver.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	ver.offset_top = -34
+	ver.offset_bottom = -16
+
+
+## 桌面版：左边立标题，右边两个入口。手机那套居中一列直接放大只会显得空。
+func _build_wide(cc: CenterContainer) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 56)
+	row.custom_minimum_size = Vector2(980, 0)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	cc.add_child(row)
+
+	var left := VBoxContainer.new()
+	left.add_theme_constant_override("separation", 12)
+	left.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_child(left)
+
+	var emblem := _emblem()
+	emblem.alignment = BoxContainer.ALIGNMENT_BEGIN
+	left.add_child(emblem)
+	left.add_child(UiKit.kicker("DARK CARD DUEL", UiPalette.GOLD_DEEP))
+
+	var title := UiKit.label("暗牌技能对战", 52, UiPalette.GOLD)
+	title.add_theme_constant_override("line_spacing", 0)
+	left.add_child(title)
+
+	var sub := UiKit.label("1v1 同时翻牌 · 读对方的手，藏自己的牌", 14, UiPalette.DIM)
+	left.add_child(sub)
+
+	var chips := HBoxContainer.new()
+	chips.add_theme_constant_override("separation", 8)
+	left.add_child(chips)
+	for t in ["读心", "1v1", "同时翻牌"]:
+		chips.add_child(UiKit.chip(t, UiPalette.DIM))
+
+	row.add_child(UiKit.spacer())
+
+	var right := VBoxContainer.new()
+	right.add_theme_constant_override("separation", 14)
+	right.custom_minimum_size = Vector2(380, 0)
+	row.add_child(right)
+
+	right.add_child(_entry("联机对战", "匹配 · 开房间 · 好友", true,
+		func() -> void: _go(LOBBY_SCENE)))
+	right.add_child(_entry("单机对战", "对着 AI 打一局", false,
+		func() -> void: _go(BATTLE_SCENE)))
+
+	_status = UiKit.label("", 11, UiPalette.DIM)
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	right.add_child(_status)
+
+
+## 手机版：居中一列
+func _build_narrow(cc: CenterContainer) -> void:
 	var v := VBoxContainer.new()
 	v.alignment = BoxContainer.ALIGNMENT_CENTER
 	v.add_theme_constant_override("separation", 0)
@@ -52,17 +131,15 @@ func _build_ui() -> void:
 	gap1.custom_minimum_size.y = 40
 	v.add_child(gap1)
 
-	var online := _entry("联机对战", "匹配 · 开房间 · 好友", true,
-		func() -> void: _go(LOBBY_SCENE))
-	v.add_child(online)
+	v.add_child(_entry("联机对战", "匹配 · 开房间 · 好友", true,
+		func() -> void: _go(LOBBY_SCENE)))
 
 	var gap2 := Control.new()
 	gap2.custom_minimum_size.y = 12
 	v.add_child(gap2)
 
-	var local := _entry("单机对战", "对着 AI 打一局", false,
-		func() -> void: _go(BATTLE_SCENE))
-	v.add_child(local)
+	v.add_child(_entry("单机对战", "对着 AI 打一局", false,
+		func() -> void: _go(BATTLE_SCENE)))
 
 	var gap3 := Control.new()
 	gap3.custom_minimum_size.y = 26
@@ -73,14 +150,11 @@ func _build_ui() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_status)
 
-	# 版本号钉在屏幕底部
-	var ver := UiKit.label("v" + str(ProjectSettings.get_setting(
-		"application/config/version", "")), 10, UiPalette.DIM)
-	ver.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	add_child(ver)
-	ver.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	ver.offset_top = -34
-	ver.offset_bottom = -16
+
+func _on_viewport_resized() -> void:
+	var wide := get_viewport_rect().size.x >= WIDE_MIN
+	if wide != _is_wide:
+		_build_ui()
 
 
 ## 标识：两张扣着的牌夹一个「VS」，一眼看出是同时翻牌的 1v1。
@@ -147,7 +221,7 @@ func _entry(title: String, desc: String, primary: bool, cb: Callable) -> Button:
 	else:
 		b = UiKit.ghost(title, 74, 16)
 
-	b.custom_minimum_size = Vector2(340, 74)
+	b.custom_minimum_size = Vector2(380 if _is_wide else 340, 74)
 	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	b.add_theme_font_size_override("font_size", 19)
 
