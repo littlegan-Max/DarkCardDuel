@@ -125,10 +125,12 @@ func _build_ui() -> void:
     var margin := MarginContainer.new()
     add_child(margin)
     margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-    margin.add_theme_constant_override("margin_left", 14)
-    margin.add_theme_constant_override("margin_right", 14)
-    margin.add_theme_constant_override("margin_top", 10)
-    margin.add_theme_constant_override("margin_bottom", 12)
+    # 14 / 10 / 14 / 12 是常态留白；手机上再叠一层刘海与home条的安全区
+    var safe := UiKit.safe_insets(self)
+    margin.add_theme_constant_override("margin_left", 14 + int(safe.x))
+    margin.add_theme_constant_override("margin_right", 14 + int(safe.z))
+    margin.add_theme_constant_override("margin_top", 10 + int(safe.y))
+    margin.add_theme_constant_override("margin_bottom", 12 + int(safe.w))
 
     var col := VBoxContainer.new()
     col.add_theme_constant_override("separation", 6)
@@ -293,11 +295,11 @@ func _build_combo() -> Control:
 
 
 ## 手牌每行几张：按可用宽度算，别写死 3 列（宽屏下会空出一大片）。
-## 卡片固定 152 宽 + 8 间距，两侧留 40；至少 3 列，最多 10 列。
+## 卡片固定 152 宽 + 8 间距，两侧留 40；至少 3 列，最多 14 列。
 func _hand_columns() -> int:
     var w := get_viewport_rect().size.x
     var n := int(floor((w - 40.0) / 160.0))
-    return clampi(n, 3, 10)
+    return clampi(n, 3, 14)
 
 
 func _on_viewport_resized() -> void:
