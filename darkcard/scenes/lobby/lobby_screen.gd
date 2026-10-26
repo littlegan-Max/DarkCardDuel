@@ -24,9 +24,6 @@ var db: CardDB
 var _status: Label
 var _status_dot: Panel
 var _online_label: Label
-var _name_edit: LineEdit
-var _host_edit: LineEdit
-var _port_edit: LineEdit
 var _room_code_edit: LineEdit
 var _friend_name_edit: LineEdit
 var _room_list: VBoxContainer
@@ -62,7 +59,6 @@ var _rating_label: Label
 var _tab_btns: Array = []
 var _pages: Array = []
 var _tab := TAB_ROOMS
-var _settings_layer: Control
 var _refresh_timer := 0.0
 var _roster_timer := 0.0    # 名单轮询的独立计时（见 _process）
 var _pending_friend_invite := ""
@@ -119,8 +115,6 @@ func _build_ui() -> void:
 	_build_body(col)
 	_build_statusbar(col)
 
-	_build_settings()
-
 
 func _build_header(col: VBoxContainer) -> void:
 	var top := HBoxContainer.new()
@@ -159,12 +153,6 @@ func _build_header(col: VBoxContainer) -> void:
 	_online_label = UiKit.label("在线 0", 11, UiPalette.TEAL)
 	orow.add_child(_online_label)
 	top.add_child(online_chip)
-
-	var cfg := UiKit.ghost("服务器", 30, 9)
-	cfg.custom_minimum_size.x = 58
-	cfg.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	cfg.pressed.connect(_open_settings)
-	top.add_child(cfg)
 
 	var home := UiKit.ghost("主菜单", 30, 9)
 	home.custom_minimum_size.x = 58
@@ -456,88 +444,6 @@ func _build_statusbar(col: VBoxContainer) -> void:
 	row.add_child(_status)
 
 
-func _build_settings() -> void:
-	var layer := Control.new()
-	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	layer.visible = false
-	add_child(layer)
-	_settings_layer = layer
-
-	# 点空白处收起（用一个透明按钮接点击，比 ColorRect 稳）
-	var scrim := Button.new()
-	scrim.focus_mode = Control.FOCUS_NONE
-	scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var scrim_box := UiKit.flat(Color(0.01, 0.02, 0.05, 0.86))
-	for s in ["normal", "hover", "pressed", "focus"]:
-		scrim.add_theme_stylebox_override(s, scrim_box)
-	scrim.pressed.connect(_close_settings)
-	layer.add_child(scrim)
-
-	var cc := CenterContainer.new()
-	cc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	cc.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(cc)
-
-	var card := PanelContainer.new()
-	card.custom_minimum_size = Vector2(400, 0)
-	card.add_theme_stylebox_override("panel",
-		UiKit.card(Color("#141C2E"), 18, Color("#33415F")))
-	cc.add_child(card)
-
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 10)
-	card.add_child(v)
-
-	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 8)
-	v.add_child(head)
-	head.add_child(UiKit.label("连接设置", 15, UiPalette.GOLD))
-	head.add_child(UiKit.spacer())
-	var close := UiKit.pill("关闭", 52)
-	close.custom_minimum_size.y = 24
-	close.pressed.connect(_close_settings)
-	head.add_child(close)
-
-	v.add_child(UiKit.section("昵称"))
-	_name_edit = UiKit.input("给自己起个名字")
-	_name_edit.text = client.player_name
-	_name_edit.text_changed.connect(func(t: String) -> void:
-		client.player_name = t
-		_sync_identity())
-	v.add_child(_name_edit)
-
-	v.add_child(UiKit.section("服务器地址"))
-	var addr := HBoxContainer.new()
-	addr.add_theme_constant_override("separation", 8)
-	v.add_child(addr)
-	_host_edit = UiKit.input("主机名或 IP")
-	_host_edit.text = client.host
-	_host_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	addr.add_child(_host_edit)
-	_port_edit = UiKit.input("端口")
-	_port_edit.text = str(client.port)
-	_port_edit.custom_minimum_size.x = 92
-	addr.add_child(_port_edit)
-
-	var acts := HBoxContainer.new()
-	acts.add_theme_constant_override("separation", 8)
-	v.add_child(acts)
-	var conn := UiKit.primary("连接服务器", 42, 11)
-	conn.add_theme_font_size_override("font_size", 14)
-	conn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	conn.pressed.connect(_on_connect)
-	acts.add_child(conn)
-	var re := UiKit.ghost("重连", 42, 11)
-	re.custom_minimum_size.x = 86
-	re.pressed.connect(_on_reconnect)
-	acts.add_child(re)
-
-	var hint := UiKit.label("同一局的所有人必须连同一台服务器；地址留 127.0.0.1 只能连本机。",
-		10, UiPalette.DIM)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	v.add_child(hint)
-
-
 func _wrap_scroll(inner: Control) -> ScrollContainer:
 	var sc := ScrollContainer.new()
 	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -549,7 +455,7 @@ func _wrap_scroll(inner: Control) -> ScrollContainer:
 	return sc
 
 
-# ---------------------------------------------------------------- 页签与设置
+# ---------------------------------------------------------------- 页签
 
 func _switch_tab(i: int) -> void:
 	_tab = i
@@ -557,17 +463,6 @@ func _switch_tab(i: int) -> void:
 		UiKit.style_tab(_tab_btns[k], k == i)
 	for k in _pages.size():
 		(_pages[k] as Control).visible = k == i
-
-
-func _open_settings() -> void:
-	_settings_layer.visible = true
-	_settings_layer.move_to_front()
-	if _name_edit != null and _name_edit.text.strip_edges() == "":
-		_name_edit.grab_focus()
-
-
-func _close_settings() -> void:
-	_settings_layer.visible = false
 
 
 ## 身份卡跟随连接状态与昵称刷新
@@ -578,7 +473,12 @@ func _sync_identity() -> void:
 	_hero_name.text = nm
 	_avatar_letter.text = nm.substr(0, 1)
 	var on := _connected
-	_conn_label.text = "已连接服务器" if on else "未连接服务器"
+	if not NetClient.TRANSPORT_READY:
+		_conn_label.text = "联机服务待接入"
+	elif on:
+		_conn_label.text = "已连接服务器"
+	else:
+		_conn_label.text = "未连接服务器"
 	(_conn_dot.get_theme_stylebox("panel") as StyleBoxFlat).bg_color = \
 		UiPalette.TEAL if on else UiPalette.DIM
 	_rating_label.text = ("评分 %d" % _my_mmr) if _my_mmr > 0 else "评分 —"
@@ -586,59 +486,37 @@ func _sync_identity() -> void:
 
 # ---------------------------------------------------------------- 操作
 
-func _on_connect() -> void:
-	if _disabled:
-		_set_status("上次连接发现版本不一致，请先让服务器更新", UiPalette.RED)
-		return
-	var port := int(_port_edit.text.strip_edges())
-	if port <= 0 or port > 65535:
-		_set_status("端口不对：填 1~65535 之间的数字", UiPalette.RED)
-		return
-	client.set_server(_host_edit.text.strip_edges(), port)
-	var nm := _name_edit.text.strip_edges()
-	if nm == "":
-		nm = "玩家" + str(randi() % 900 + 100)
-		_name_edit.text = nm
-	client.player_name = nm
-	_sync_identity()
-	_close_settings()
-	if client.has_identity():
-		client.login()
-	else:
-		client.register(nm)
-
-
-func _on_reconnect() -> void:
-	var port := int(_port_edit.text.strip_edges())
-	if port > 0 and port <= 65535:
-		client.set_server(_host_edit.text.strip_edges(), port)
-	if client.has_identity():
-		client.login()
-	else:
-		_on_connect()
-
-
 func _on_matchmake() -> void:
 	if _queued:
 		client.cancel_match()
 		_queued = false
 		_match_btn.text = "快速匹配"
 		return
-	if not client.has_identity():
-		_set_status("先点右上角「服务器」连上服务器", UiPalette.RED)
-		_open_settings()
+	if not _require_online():
 		return
 	client.matchmake()
 	_queued = true
 	_match_btn.text = "取消匹配"
 
 
+## 联机没接上时，所有动作都走这里：说清原因，不要静默失败。
+func _require_online() -> bool:
+	if _connected:
+		return true
+	_set_status("联机服务尚未接入，等对接方把连接层接好", UiPalette.GOLD)
+	return false
+
+
 func _on_create_room() -> void:
+	if not _require_online():
+		return
 	_turn_seconds = float(_turn_opt.get_item_id(_turn_opt.get_selected_id()))
 	client.create_room(_turn_seconds)
 
 
 func _on_join_room() -> void:
+	if not _require_online():
+		return
 	var code := _room_code_edit.text.strip_edges().to_upper()
 	if code.length() != 6:
 		_set_status("房号是 6 位", UiPalette.RED)
@@ -670,6 +548,8 @@ func _on_leave_room() -> void:
 
 
 func _on_add_friend() -> void:
+	if not _require_online():
+		return
 	var nm := _friend_name_edit.text.strip_edges()
 	if nm == "":
 		return
@@ -956,11 +836,10 @@ func _on_online_count(c: int) -> void:
 func _refresh_status() -> void:
 	_online_label.text = "在线 —"
 	_sync_identity()
-	if client.has_identity():
+	if not NetClient.TRANSPORT_READY:
+		_set_status("联机服务尚未接入，等对接方把连接层接好", UiPalette.GOLD)
+	elif client.has_identity():
 		_set_status("已有存档，正在重连…", UiPalette.DIM)
-		_on_reconnect()
-	else:
-		_set_status("点右上角「服务器」填昵称和地址，再连接", UiPalette.DIM)
 
 
 func _refresh_rooms(rooms: Array) -> void:

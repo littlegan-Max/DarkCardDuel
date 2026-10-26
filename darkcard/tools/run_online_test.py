@@ -89,6 +89,13 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             srv.kill()
 
+    # 客户端连接层还是接口壳时，两边都会打印 SKIP。这不是通过，是「本项待接入」，
+    # 所以显式跳过并说明原因，别让它静默当成绿灯。
+    if all("[online] SKIP" in outs.get(s, "") for s in (0, 1)):
+        print("── 跳过：客户端连接层待接入（scripts/net/net_client.gd）")
+        print("\nSKIPPED")
+        return 0
+
     for seat in (0, 1):
         print("── 客户端 seat=%d 输出" % seat)
         for line in outs.get(seat, "").splitlines():

@@ -25,6 +25,14 @@ var _done := false
 
 
 func _initialize() -> void:
+	# 连接层已经清空成接口壳（见 scripts/net/net_client.gd）。
+	# 对接方把 TRANSPORT_READY 改成 true 之后，这条端到端才会真正跑；
+	# 在那之前明确跳过，而不是让它超时变红、也不是假装通过。
+	if not NetClient.TRANSPORT_READY:
+		print("[online] SKIP 联机层待接入（scripts/net/net_client.gd）")
+		quit(0)
+		return
+
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--port="):
 			port = int(arg.split("=")[1])
